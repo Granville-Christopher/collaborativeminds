@@ -17,7 +17,8 @@
       "jsEngine": "hermes"
     },
     "android": {
-      "jsEngine": "hermes"
+      "jsEngine": "hermes",
+      "package": "com.collaborative.minds"
     },
     "plugins": [
       "expo-web-browser"
