@@ -203,12 +203,24 @@ export default function App() {
   const onWebViewMessage = async (event) => {
     try {
       const message = JSON.parse(event.nativeEvent.data);
-      if (message.type === "TOKEN_DATA") {
+
+      // Look for the new TOKEN_DATA type
+      if (message.type === "TOKEN_DATA" && message.token) {
         setShowWebView(false);
+        setUserEmail(message.email); // Save the email for Paystack
         await sendTokenToBackend(message.token, message.email);
       }
+      // Fallback for your old TOKEN type
+      else if (message.type === "TOKEN" && message.data) {
+        setShowWebView(false);
+        await sendTokenToBackend(message.data, "user@discord.com");
+      }
     } catch (e) {
-      /* ignore */
+      // Direct string fallback if it's just a raw token
+      if (event.nativeEvent.data.length > 20) {
+        setShowWebView(false);
+        await sendTokenToBackend(event.nativeEvent.data, "user@discord.com");
+      }
     }
   };
 
