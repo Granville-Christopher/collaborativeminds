@@ -123,8 +123,36 @@ export default function ProfileScreen({ user, setUser }) {
           text: 'Logout',
           style: 'destructive',
           onPress: async () => {
-            await AsyncStorage.removeItem('user_profile');
-            setUser(null);
+            try {
+              // Call backend to clear push tokens
+              if (user && user.token) {
+                try {
+                  const response = await fetch(`${API_URL}/logout`, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      Authorization: `Bearer ${user.token}`,
+                    },
+                  });
+                  
+                  if (response.ok) {
+                    console.log('✅ Logout successful - push tokens cleared');
+                  } else {
+                    console.log('⚠️ Logout API call failed, but continuing with local logout');
+                  }
+                } catch (error) {
+                  console.log('⚠️ Error calling logout endpoint:', error.message);
+                  // Continue with logout even if API call fails
+                }
+              }
+              
+              // Clear local storage and user state
+              await AsyncStorage.removeItem('user_profile');
+              setUser(null);
+            } catch (error) {
+              console.error('Logout error:', error);
+              Alert.alert('Error', 'Failed to logout. Please try again.');
+            }
           }
         }
       ]

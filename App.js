@@ -11,13 +11,16 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import WelcomeScreen from "./screens/WelcomeScreen";
 import LoginScreen from "./screens/LoginScreen";
 import SignupScreen from "./screens/SignupScreen";
+import ForgotPasswordScreen from "./screens/ForgotPasswordScreen";
+import ResetPasswordScreen from "./screens/ResetPasswordScreen";
 import Dashboard from "./screens/Dashboard";
 import ProfileScreen from "./screens/ProfileScreen";
 import BlockedAccessScreen from "./screens/BlockedAccessScreen";
 import AccountLinkScreen from "./screens/AccountLinkScreen";
 import { isSubscriptionExpired } from "./utils/subscription";
+import * as Linking from "expo-linking";
 
-const Drawer = createDrawerNavigator();
+const Drawer = createDrawerNavigator(); 
 const API_URL = "https://intelligent-gratitude-production.up.railway.app";
 
 // Configure notification handler
@@ -33,6 +36,42 @@ Notifications.setNotificationHandler({
 export default function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const navigationRef = React.useRef(null);
+
+  // Handle deep links
+  useEffect(() => {
+    // Check if app was opened from a deep link
+    Linking.getInitialURL().then((url) => {
+      if (url) {
+        handleDeepLink(url);
+      }
+    });
+
+    // Listen for deep links while app is running
+    const subscription = Linking.addEventListener('url', (event) => {
+      handleDeepLink(event.url);
+    });
+
+    return () => {
+      subscription?.remove();
+    };
+  }, []);
+
+  const handleDeepLink = (url) => {
+    const parsed = Linking.parse(url);
+    
+    // Handle reset password deep link
+    if (parsed.path === 'reset-password' && parsed.queryParams?.token) {
+      // Navigate to ResetPassword screen with token
+      setTimeout(() => {
+        if (navigationRef.current) {
+          navigationRef.current.navigate('ResetPassword', { 
+            token: parsed.queryParams.token 
+          });
+        }
+      }, 500);
+    }
+  };
 
   // Load user on mount
   useEffect(() => {
@@ -199,7 +238,7 @@ export default function App() {
   if (!user) {
     return (
       <GestureHandlerRootView style={{ flex: 1 }}>
-        <NavigationContainer>
+        <NavigationContainer ref={navigationRef}>
           <Drawer.Navigator
             screenOptions={{ 
               headerShown: false, 
@@ -216,6 +255,12 @@ export default function App() {
           </Drawer.Screen>
           <Drawer.Screen name="Signup">
             {(props) => <SignupScreen {...props} setUser={setUser} />}
+          </Drawer.Screen>
+          <Drawer.Screen name="ForgotPassword">
+            {(props) => <ForgotPasswordScreen {...props} />}
+          </Drawer.Screen>
+          <Drawer.Screen name="ResetPassword">
+            {(props) => <ResetPasswordScreen {...props} />}
           </Drawer.Screen>
         </Drawer.Navigator>
       </NavigationContainer>

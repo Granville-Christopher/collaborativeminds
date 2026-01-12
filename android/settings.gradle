@@ -1,4 +1,12 @@
 pluginManagement {
+  repositories {
+    google()
+    mavenCentral()
+    gradlePluginPortal()
+    // Add fallback repositories for EAS build issues
+    maven { url 'https://www.jitpack.io' }
+  }
+  
   def reactNativeGradlePlugin = new File(
     providers.exec {
       workingDir(rootDir)
@@ -34,6 +42,17 @@ expoAutolinking.useExpoModules()
 rootProject.name = 'CollaborativeSuccess'
 
 expoAutolinking.useExpoVersionCatalog()
+
+// Configure dependency resolution to avoid EAS build cache timeouts
+dependencyResolutionManagement {
+  repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+  repositories {
+    google()
+    mavenCentral()
+    gradlePluginPortal()
+    maven { url 'https://www.jitpack.io' }
+  }
+}
 
 include ':app'
 includeBuild(expoAutolinking.reactNativeGradlePlugin)

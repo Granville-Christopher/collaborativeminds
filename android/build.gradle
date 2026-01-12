@@ -4,6 +4,8 @@ buildscript {
   repositories {
     google()
     mavenCentral()
+    // Add Gradle plugin portal as fallback
+    gradlePluginPortal()
   }
   dependencies {
     classpath('com.android.tools.build:gradle')
@@ -18,6 +20,8 @@ allprojects {
     google()
     mavenCentral()
     maven { url 'https://www.jitpack.io' }
+    // Add Gradle plugin portal as fallback
+    gradlePluginPortal()
   }
 }
 

@@ -1,7 +1,16 @@
 apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
-apply plugin: "com.google.gms.google-services"
+
+// Conditionally apply Google Services plugin only if google-services.json exists
+def googleServicesFile = file("${projectDir}/google-services.json")
+def hasGoogleServices = googleServicesFile.exists()
+if (hasGoogleServices) {
+    apply plugin: "com.google.gms.google-services"
+    println "✅ Google Services plugin applied (google-services.json found)"
+} else {
+    println "⚠️ Google Services plugin skipped (google-services.json not found - Firebase optional)"
+}
 
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
 
@@ -93,7 +102,7 @@ android {
         applicationId 'com.collaborative.minds'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
+        versionCode 16
         versionName "1.0.0"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
@@ -181,8 +190,12 @@ dependencies {
         implementation jscFlavor
     }
 
-    // Firebase
-    implementation platform('com.google.firebase:firebase-bom:32.7.0')
-    implementation 'com.google.firebase:firebase-analytics'
-    implementation 'com.google.firebase:firebase-messaging'
+    // Firebase (optional - only if google-services.json exists)
+    if (hasGoogleServices) {
+        implementation platform('com.google.firebase:firebase-bom:32.7.0')
+        implementation 'com.google.firebase:firebase-analytics'
+        implementation 'com.google.firebase:firebase-messaging'
+    } else {
+        println "⚠️ Firebase dependencies skipped (google-services.json not found)"
+    }
 }

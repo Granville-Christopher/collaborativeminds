@@ -8,21 +8,29 @@
       "ios",
       "android"
     ],
+    "icon": "./assets/icon.png",
     "experiments": {
       "tsconfigPaths": true
     },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.yourname.collaborativesuccess",
-      "jsEngine": "hermes"
+      "jsEngine": "hermes",
+      "icon": "./assets/icon.png"
     },
     "android": {
       "jsEngine": "hermes",
-      "package": "com.collaborative.minds"
+      "package": "com.collaborative.minds",
+      "icon": "./assets/icon.png",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#5865F2"
+      }
     },
     "plugins": [
       "expo-web-browser"
     ],
+    "scheme": "collaborativesuccess",
     "extra": {
       "eas": {
         "projectId": "e0e7a53a-f590-481b-9cb5-ed9fc4fd945a"

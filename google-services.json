@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "217211734052",
+    "project_id": "collaborative-minds",
+    "storage_bucket": "collaborative-minds.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:217211734052:android:16faf45609cac29bbfb0b1",
+        "android_client_info": {
+          "package_name": "com.collaborative.minds"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAcophfGQt0H9nFNFjgI16LjOreRKKdKSY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
