@@ -39,7 +39,13 @@ export default function LoginScreen({ navigation, setUser }) {
         await AsyncStorage.setItem('user_profile', JSON.stringify(user));
         setUser(user);
       } else {
-        Alert.alert('Error', data.error || 'Login failed');
+        // Show error message from backend (includes session limit errors)
+        const errorMessage = data.error || 'Login failed';
+        Alert.alert(
+          response.status === 403 ? 'Session Limit Reached' : 'Error',
+          errorMessage,
+          [{ text: 'OK' }]
+        );
       }
     } catch (error) {
       Alert.alert('Error', 'Network error. Please try again.');

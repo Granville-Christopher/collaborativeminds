@@ -56,18 +56,78 @@ export default function AccountLinkScreen({ user }) {
     fetchAccounts();
   };
 
+  const handleUnlink = async (discordId, username) => {
+    Alert.alert(
+      'Unlink Account',
+      `Are you sure you want to unlink ${username || 'this Discord account'}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Unlink',
+          style: 'destructive',
+          onPress: async () => {
+            if (!user || !user.token) {
+              Alert.alert('Error', 'Please login first');
+              return;
+            }
+
+            try {
+              const response = await fetch(`${API_URL}/unlink-discord`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${user.token}`
+                },
+                body: JSON.stringify({ discord_id: discordId }),
+              });
+
+              const result = await response.json();
+              if (response.ok) {
+                Alert.alert('✅ Success', 'Discord account unlinked successfully!');
+                await fetchAccounts(); // Refresh the list
+              } else {
+                Alert.alert('Error', result.error || 'Failed to unlink Discord account');
+              }
+            } catch (error) {
+              console.error('Unlink error:', error);
+              Alert.alert('Server Error', 'Could not reach backend.');
+            }
+          }
+        }
+      ]
+    );
+  };
+
   return (
     <View style={{ flex:1, padding:16 }}>
       <Text style={{ fontSize:20, fontWeight:'bold', marginBottom:12 }}>Linked Discord Accounts</Text>
       <FlatList
         data={accounts}
         keyExtractor={(i) => String(i._id || i.discord_id || i.username)}
-        renderItem={({ item }) => (
-          <View style={{ padding:12, borderBottomWidth:1, borderBottomColor:'#eee' }}>
-            <Text style={{ fontWeight:'600' }}>{item.username || item.discord_id || item._id || 'Discord Account'}</Text>
-            <Text style={{ color:'#666', marginTop:6 }}>ID: {item.discord_id || item._id}</Text>
-          </View>
-        )}
+        renderItem={({ item }) => {
+          const discordId = item.discord_id || item._id;
+          const username = item.username || 'Discord Account';
+          
+          return (
+            <View style={{ padding:12, borderBottomWidth:1, borderBottomColor:'#eee', flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+              <View style={{ flex:1 }}>
+                <Text style={{ fontWeight:'600' }}>{username}</Text>
+                <Text style={{ color:'#666', marginTop:6, fontSize:12 }}>ID: {discordId}</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => handleUnlink(discordId, username)}
+                style={{
+                  backgroundColor: '#ef4444',
+                  paddingHorizontal: 16,
+                  paddingVertical: 8,
+                  borderRadius: 6,
+                }}
+              >
+                <Text style={{ color: '#fff', fontWeight: '600', fontSize: 12 }}>Unlink</Text>
+              </TouchableOpacity>
+            </View>
+          );
+        }}
         ListEmptyComponent={
           refreshing ? (
             <ActivityIndicator size="large" color="#5865F2" style={{ marginTop: 20 }} />

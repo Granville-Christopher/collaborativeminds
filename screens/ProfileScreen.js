@@ -8,7 +8,7 @@ import { useNavigation } from '@react-navigation/native';
 
 const API_URL = 'https://intelligent-gratitude-production.up.railway.app';
 
-export default function ProfileScreen({ user, setUser }) {
+export default function ProfileScreen({ user, setUser, onShowOnboarding }) {
   const navigation = useNavigation();
   const [receipts, setReceipts] = useState([]);
   const [loadingReceipts, setLoadingReceipts] = useState(false);
@@ -332,6 +332,14 @@ export default function ProfileScreen({ user, setUser }) {
         )}
       </View>
 
+      <TouchableOpacity 
+        style={styles.onboardingBtn} 
+        onPress={() => onShowOnboarding && onShowOnboarding()}
+      >
+        <Text style={styles.onboardingIcon}>📚</Text>
+        <Text style={styles.onboardingBtnText}>View Onboarding</Text>
+      </TouchableOpacity>
+
       <TouchableOpacity style={styles.supportBtn} onPress={handleContactSupport}>
         <Text style={styles.supportIcon}>💬</Text>
         <Text style={styles.supportBtnText}>Contact Support</Text>
@@ -559,6 +567,29 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#5865F2',
     fontWeight: '600',
+  },
+  onboardingBtn: {
+    backgroundColor: '#5865F2',
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginBottom: 12,
+    shadowColor: '#5865F2',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  onboardingIcon: {
+    fontSize: 18,
+    marginRight: 10,
+  },
+  onboardingBtnText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
   },
   supportBtn: {
     backgroundColor: '#25D366',

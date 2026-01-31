@@ -17,6 +17,7 @@ import Dashboard from "./screens/Dashboard";
 import ProfileScreen from "./screens/ProfileScreen";
 import BlockedAccessScreen from "./screens/BlockedAccessScreen";
 import AccountLinkScreen from "./screens/AccountLinkScreen";
+import OnboardingScreen from "./screens/OnboardingScreen";
 import { isSubscriptionExpired } from "./utils/subscription";
 import * as Linking from "expo-linking";
 
@@ -37,6 +38,8 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const navigationRef = React.useRef(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [isFirstTimeOnboarding, setIsFirstTimeOnboarding] = useState(false);
 
   // Handle deep links
   useEffect(() => {
@@ -226,6 +229,25 @@ export default function App() {
     }
   };
 
+  // Show onboarding once after first successful login
+  useEffect(() => {
+    if (!user) return;
+
+    const checkOnboarding = async () => {
+      try {
+        const flag = await AsyncStorage.getItem("has_seen_onboarding_v1");
+        if (!flag) {
+          setShowOnboarding(true);
+          setIsFirstTimeOnboarding(true); // Mark as first time (can't skip)
+        }
+      } catch (e) {
+        console.error("Error checking onboarding flag:", e.message);
+      }
+    };
+
+    checkOnboarding();
+  }, [user?._id]);
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -336,7 +358,10 @@ export default function App() {
               drawerLabel: "👤 Profile",
             }}
           >
-            {(props) => <ProfileScreen {...props} user={user} setUser={setUser} />}
+            {(props) => <ProfileScreen {...props} user={user} setUser={setUser} onShowOnboarding={() => {
+              setShowOnboarding(true);
+              setIsFirstTimeOnboarding(false);
+            }} />}
           </Drawer.Screen>
           <Drawer.Screen 
             name="Blocked"
@@ -421,7 +446,10 @@ export default function App() {
             title: "Profile",
           }}
         >
-          {(props) => <ProfileScreen {...props} user={user} setUser={setUser} />}
+          {(props) => <ProfileScreen {...props} user={user} setUser={setUser} onShowOnboarding={() => {
+            setShowOnboarding(true);
+            setIsFirstTimeOnboarding(false);
+          }} />}
         </Drawer.Screen>
         <Drawer.Screen
           name="Accounts"
@@ -442,7 +470,23 @@ export default function App() {
           {(props) => <BlockedAccessScreen {...props} user={user} setUser={setUser} />}
         </Drawer.Screen>
       </Drawer.Navigator>
-    </NavigationContainer>
+      </NavigationContainer>
+
+      {showOnboarding && (
+        <OnboardingScreen
+          onComplete={async () => {
+            try {
+              await AsyncStorage.setItem("has_seen_onboarding_v1", "true");
+            } catch (e) {
+              console.error("Error saving onboarding flag:", e.message);
+            } finally {
+              setShowOnboarding(false);
+              setIsFirstTimeOnboarding(false);
+            }
+          }}
+          canSkip={!isFirstTimeOnboarding} // Can only skip if not first time
+        />
+      )}
     </GestureHandlerRootView>
   );
 }

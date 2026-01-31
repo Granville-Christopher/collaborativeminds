@@ -22,9 +22,9 @@ export default function BlockedAccessScreen({ user, setUser }) {
     },
     pro: {
       name: 'Pro',
-      monthly: { price: 22000, months: 1 },
-      quarterly: { price: 66000, months: 3 }, // 22000 * 3 = 66,000
-      yearly: { price: 264000, months: 12 }, // 22000 * 12 = 264,000
+      monthly: { price: 30000, months: 1 },
+      quarterly: { price: 90000, months: 3 }, // 30000 * 3 = 90,000
+      yearly: { price: 360000, months: 12 }, // 30000 * 12 = 360,000
     },
     unlimited: {
       name: 'Unlimited',
@@ -254,11 +254,31 @@ export default function BlockedAccessScreen({ user, setUser }) {
             <Text style={styles.featureIcon}>✓</Text>
             <Text style={styles.feature}>Live feed dashboard</Text>
           </View>
+          {selectedPlan === 'basic' && (
+            <>
+              <View style={styles.featureItem}>
+                <Text style={styles.featureIcon}>✓</Text>
+                <Text style={styles.feature}>Up to 10 Discord accounts</Text>
+              </View>
+              <View style={styles.featureItem}>
+                <Text style={styles.featureIcon}>✓</Text>
+                <Text style={styles.feature}>1 user per app</Text>
+              </View>
+            </>
+          )}
           {selectedPlan === 'pro' && (
             <>
               <View style={styles.featureItem}>
                 <Text style={styles.featureIcon}>✓</Text>
-                <Text style={styles.feature}>Multiple account support</Text>
+                <Text style={styles.feature}>Up to 40 Discord accounts</Text>
+              </View>
+              <View style={styles.featureItem}>
+                <Text style={styles.featureIcon}>✓</Text>
+                <Text style={styles.feature}>3 users can share one app</Text>
+              </View>
+              <View style={styles.featureItem}>
+                <Text style={styles.featureIcon}>✓</Text>
+                <Text style={styles.feature}>Accumulates moves even when offline</Text>
               </View>
               <View style={styles.featureItem}>
                 <Text style={styles.featureIcon}>✓</Text>
